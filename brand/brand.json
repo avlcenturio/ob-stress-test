@@ -1,0 +1,19 @@
+{
+  "_note": "Official colours from the Ozone logo. 'accent' is for fills (buttons, stripes, charts) with 'accent_ink' text on it; 'accent_text' is the readable version for links and text on white. 'logo' is for light backgrounds, 'logo_on_dark' (white lettering) for the navy headers. The logo already contains the name, so show_name_with_logo is false.",
+  "name": "Ozone API",
+  "product": "Open Banking Stress Test",
+  "navy": "#0B1340",
+  "navy_soft": "#1B2766",
+  "accent": "#35BFD4",
+  "accent_ink": "#0B1340",
+  "accent_text": "#167A8A",
+  "accent_on_dark": "#35BFD4",
+  "orange": "#FDAA35",
+  "coral": "#FD6435",
+  "ok": "#1A7F52",
+  "bad": "#C62828",
+  "font": "\"Inter\", \"Segoe UI\", system-ui, -apple-system, sans-serif",
+  "logo": "logo.svg",
+  "logo_on_dark": "logo_on_dark.svg",
+  "show_name_with_logo": false
+}

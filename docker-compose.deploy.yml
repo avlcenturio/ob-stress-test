@@ -1,0 +1,26 @@
+# Server deployment from Docker Hub: no source code needed on the server, only this file,
+# a .env file and ./tls/ (server.pem, server.key).
+#
+#   .env:  OB_IMAGE=yourname/ozone-ob-stress-test:latest   (or a version, e.g. :1.2.3)
+#          OB_WEB_USER=admin
+#          OB_WEB_PASSWORD=<a strong password>
+#
+#   docker login                                   # once, if the Docker Hub repository is private
+#   docker compose -f docker-compose.deploy.yml up -d
+services:
+  stress-test:
+    image: ${OB_IMAGE:?set OB_IMAGE in .env, e.g. yourname/ozone-ob-stress-test:latest}
+    ports:
+      - "${OB_BIND:-0.0.0.0}:8089:8089"
+    volumes:
+      - ob-data:/data                  # tenant profiles, test profiles, tokens, certificates, results
+      - ./tls:/tls:ro
+    environment:
+      OB_WEB_USER: ${OB_WEB_USER:?set OB_WEB_USER in .env}
+      OB_WEB_PASSWORD: ${OB_WEB_PASSWORD:?set OB_WEB_PASSWORD in .env}
+      OB_HEALTH_SCHEME: https
+    command: ["--web-host", "0.0.0.0", "--web-port", "8089", "--tls-cert", "/tls/server.pem", "--tls-key", "/tls/server.key"]
+    restart: unless-stopped
+
+volumes:
+  ob-data:

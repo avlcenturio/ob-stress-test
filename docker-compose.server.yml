@@ -1,0 +1,15 @@
+# Server: login + HTTPS, reachable from other machines.
+#   1. Put the server's TLS certificate and key in ./tls/ (server.pem, server.key)
+#   2. Create .env with OB_BIND=0.0.0.0, OB_WEB_USER=... and OB_WEB_PASSWORD=...
+#   3. docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
+#   Open https://<server>:8089 ; register https://<server>:8089/ob-callback as a redirect URL for automatic capture.
+services:
+  stress-test:
+    volumes:
+      - ob-data:/data
+      - ./tls:/tls:ro
+    environment:
+      OB_WEB_USER: ${OB_WEB_USER:?set OB_WEB_USER in .env}
+      OB_WEB_PASSWORD: ${OB_WEB_PASSWORD:?set OB_WEB_PASSWORD in .env}
+      OB_HEALTH_SCHEME: https
+    command: ["--web-host", "0.0.0.0", "--web-port", "8089", "--tls-cert", "/tls/server.pem", "--tls-key", "/tls/server.key"]

@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Test profiles – Open Banking Stress Test</title>
+<link rel="stylesheet" href="/ob-brand/theme.css">
+<style>
+:root{--ok-bg:#e6f4ec;--note-bg:var(--warn-bg);--note:var(--warn);box-sizing:border-box;
+padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root{--ok-bg:#12301f}}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--font)}
+a{color:var(--accent-text)}
+header.top{position:sticky;top:0;z-index:10;background:var(--navy);color:#fff;box-shadow:inset 0 -3px 0 var(--accent)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--navy);z-index:11}
+.bar{max-width:1240px;margin:0 auto;padding:12px 20px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;margin-right:auto;min-width:0}
+.brand img{height:28px;display:block}
+.brand .name{font-weight:700;font-size:17px}
+.brand .sep{width:1px;height:22px;background:rgba(255,255,255,.3)}
+.brand .page{font-size:14px;opacity:.85;white-space:nowrap}
+@media (max-width:1100px){.brand .sep,.brand .page{display:none}}
+.actions{display:flex;gap:8px;align-items:center}
+@media (max-width:760px){.bar{flex-direction:column;align-items:stretch}.actions{min-width:0;max-width:100%;overflow-x:auto;scrollbar-width:none}
+.actions::-webkit-scrollbar{display:none}.actions>*{flex:none}}
+button,.btn{font:inherit;font-weight:600;font-size:13.5px;border:1px solid var(--line);background:var(--card);color:var(--ink);
+height:36px;padding:0 14px;border-radius:8px;cursor:pointer;text-decoration:none;white-space:nowrap;display:inline-flex;
+align-items:center;gap:6px;transition:background-color .15s,border-color .15s;box-sizing:border-box}
+button:hover,.btn:hover{border-color:var(--muted);background:var(--chip)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.55;cursor:default;transform:none}
+button:focus-visible,.btn:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:2px}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.primary:hover{filter:brightness(1.06);background:var(--accent)}
+button.danger{color:var(--bad)}
+button.link{border:0;background:none;color:var(--accent-text);padding:0 4px;height:auto}
+button.link:hover{text-decoration:underline;background:none}
+header button,header .btn{background:transparent;color:#fff;border-color:rgba(255,255,255,.38)}
+header button:hover,header .btn:hover{border-color:#fff;background:rgba(255,255,255,.1)}
+header button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+main{max-width:1240px;margin:0 auto;padding:22px 20px 60px}
+.banner{background:var(--note-bg);color:var(--note);border-radius:8px;padding:10px 14px;margin:0 0 16px}
+h1{font-size:clamp(21px,2.6vw,26px);margin:0 0 4px} .lede{color:var(--muted);margin:0 0 18px;max-width:70ch}
+section.card{background:var(--card);border:1px solid var(--line);border-top:3px solid var(--navy);border-radius:12px;margin:0 0 18px}
+@media (prefers-color-scheme:dark){section.card{border-top-color:var(--accent)}}
+section.card>h2{font-size:15px;margin:0;padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+section.card>h2 small{font-weight:400;color:var(--muted);font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:14px 18px;padding:16px}
+.field label.l{display:block;font-weight:600;font-size:13px;margin-bottom:4px}
+.field .hint{color:var(--muted);font-size:12px;margin-top:3px}
+.field.wide{grid-column:1/-1}
+input[type=text],input[type=password],input[type=number],select{width:100%;font:inherit;color:var(--ink);background:var(--field);
+border:1px solid var(--line);border-radius:8px;padding:0 10px;height:36px}
+textarea{width:100%;font:12.5px/1.45 ui-monospace,Consolas,monospace;color:var(--ink);background:var(--field);border:1px solid var(--line);
+border-radius:8px;padding:8px 10px;min-height:70px;resize:vertical}
+.inline{display:flex;gap:8px;align-items:center}
+.status{font-size:12px;margin-top:4px;color:var(--muted);word-break:break-word} .status.ok{color:var(--ok)} .status.bad{color:var(--bad)}
+.src{font-size:11px;font-weight:600;border-radius:10px;padding:1px 7px;margin-left:6px;vertical-align:1px}
+.src.disc{background:var(--ok-bg);color:var(--ok)} .src.sug{background:var(--chip);color:var(--muted)} .src.man{background:var(--note-bg);color:var(--note)}
+.chip{background:var(--chip);border-radius:20px;padding:2px 10px;font-size:12px;color:var(--muted);white-space:nowrap}
+.chip.ok{background:var(--ok-bg);color:var(--ok)} .chip.warn{background:var(--note-bg);color:var(--note)}
+.hidden{display:none!important}
+/* tenant list */
+.tlist{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,420px),1fr));gap:16px}
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
+.tcard h3{margin:0;font-size:16px} .tcard .host{font:12.5px ui-monospace,Consolas,monospace;color:var(--muted);overflow-wrap:anywhere}
+.tcard .meta{display:flex;gap:6px;flex-wrap:wrap}
+.tcard .foot{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap}
+.empty{text-align:center;padding:48px 16px;color:var(--muted);background:var(--card);border:1px dashed var(--line);border-radius:12px}
+/* wizard */
+.wiz{display:grid;grid-template-columns:240px minmax(0,1fr);gap:24px;align-items:start}
+@media (max-width:900px){.wiz{grid-template-columns:1fr}}
+.stepper{position:sticky;top:80px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px}
+@media (max-width:900px){.stepper{position:static;display:flex;overflow-x:auto;gap:4px}}
+.step{display:flex;gap:10px;align-items:center;width:100%;height:auto;min-height:40px;border:0;background:none;padding:8px 10px;border-radius:8px;
+font-weight:500;color:var(--muted);text-align:left;white-space:normal}
+.step:hover{background:var(--chip)}
+.step .n{flex:none;width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;
+background:var(--chip);color:var(--muted)}
+.step.done .n{background:var(--ok-bg);color:var(--ok)}
+.step.on{color:var(--ink);font-weight:600;background:var(--chip)}
+.step.on .n{background:var(--navy);color:#fff}
+@media (prefers-color-scheme:dark){.step.on .n{background:var(--accent);color:var(--accent-ink)}}
+@media (max-width:900px){.step{width:auto;flex:none}}
+.wfoot{display:flex;gap:8px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-top:6px}
+dl.found{display:grid;grid-template-columns:minmax(150px,max-content) 1fr;gap:6px 18px;margin:0;padding:16px}
+dl.found dt{color:var(--muted);font-size:13px} dl.found dd{margin:0;font:12.5px/1.5 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+.scope{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:12px;padding:16px}
+.scope label{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:12px 14px;cursor:pointer}
+.scope label:has(input:checked){border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.scope input,.ep input{accent-color:var(--accent);width:16px;height:16px;margin:2px 0 0}
+.scope b{display:block} .scope span{color:var(--muted);font-size:12.5px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;border-radius:0;height:34px}
+.seg button+button{border-left:1px solid var(--line)}
+.seg button[aria-pressed="true"]{background:var(--navy);color:#fff}
+@media (prefers-color-scheme:dark){.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink)}}
+.panel{padding:16px;border-bottom:1px solid var(--line)}
+.panel h3{font-size:13px;margin:0}
+.eptools{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 16px 0}
+.eplist{padding:0 16px 16px}
+.group{margin-top:14px}
+.group h4{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 6px;font-weight:600}
+.ep{display:grid;grid-template-columns:22px 64px minmax(0,1fr) 92px;gap:10px;align-items:center;padding:7px 10px;border-radius:8px;cursor:pointer}
+.ep:hover{background:var(--chip)}
+.m{font:600 11px/1 ui-monospace,Consolas,monospace;border-radius:5px;padding:4px 0;text-align:center;color:#fff}
+.m.GET{background:#167A8A} .m.POST{background:#1B2766} .m.DELETE{background:#9a3412}
+.path{font:12.5px/1.4 ui-monospace,Consolas,monospace;overflow-wrap:anywhere}
+.path small{display:block;font:12px/1.4 var(--font);color:var(--muted)}
+.path small.need{color:var(--note)}
+.weight{font-size:12px;color:var(--muted);white-space:nowrap}
+.ep.off .path,.ep.off .m{opacity:.45}
+.scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:560px}
+td,th{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{color:var(--muted);font-weight:500} td.mono{font:12px ui-monospace,Consolas,monospace}
+.review{padding:6px 16px 16px}
+.review .sec{display:grid;grid-template-columns:minmax(160px,max-content) 1fr auto;gap:4px 16px;padding:12px 0;border-bottom:1px solid var(--line);align-items:start}
+.review .sec:last-child{border-bottom:0}
+.review b{font-size:14px} .review .vals{font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.issues{margin:0;padding:0 0 0 18px} .issues li{margin:3px 0}
+#toast{position:fixed;right:20px;bottom:20px;max-width:460px;display:flex;flex-direction:column;gap:8px;z-index:30}
+.msg{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--ok);border-radius:8px;padding:10px 12px;
+box-shadow:0 4px 16px rgba(0,0,0,.12);white-space:pre-line}
+.msg.bad{border-left-color:var(--bad)}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);width:min(680px,94vw);padding:0}
+dialog::backdrop{background:rgba(5,12,25,.5)}
+dialog .inner{padding:18px} dialog textarea{min-height:240px}
+footer.credit{max-width:1240px;margin:0 auto;padding:0 20px 28px;color:var(--muted);font-size:12px}
+.wt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.wt input{width:56px;height:30px;padding:0 6px;text-align:right}
+.total{display:flex;gap:10px;align-items:baseline;padding:0 16px 16px}
+.total b{font-size:22px} .total span{color:var(--muted)}
+.tgroup{margin:0 0 22px} .tgroup h2.tg{font-size:13px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);margin:0 0 10px;font-weight:600}
+select{appearance:none;-webkit-appearance:none;padding-right:40px!important;cursor:pointer;
+background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%235a6678' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+background-repeat:no-repeat;background-position:right 16px center;background-size:12px 8px}
+@media (prefers-color-scheme:dark){select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%239aa8bd' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}}
+.embed{border:1px solid var(--line);border-radius:10px;padding:14px 16px;background:var(--bg)}
+.embed h3{font-size:13px;margin:0} .embed h3 small{font-weight:400;color:var(--muted)}
+.waiting{display:inline-flex;align-items:center;gap:8px}
+.waiting .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.25}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.waiting .dot{animation:none}}
+a.btn.primary-link{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+</style>
+</head>
+<body>
+<header class="top"><div class="bar">
+  <div class="brand"><span id="brandMark" class="name">Ozone API</span><span class="sep"></span><span class="page" id="brandPage">Open Banking Stress Test · Test profiles</span></div>
+  <div class="actions" id="actions"></div>
+</div></header>
+<main id="main"></main>
+<footer class="credit">Load generation powered by <a href="https://locust.io" target="_blank" rel="noopener" style="color:inherit">Locust</a> (MIT licence).</footer>
+<div id="toast"></div>
+
+<dialog id="dlgImport"><div class="inner">
+  <h2 style="margin:0 0 6px;font-size:16px">Import a test profile</h2>
+  <p style="color:var(--muted);margin:0 0 10px">Paste a test profile exported from this page, or choose the file. It’s added as a new profile; tokens are never imported, so authorise new ones.</p>
+  <input type="file" id="importFile" accept=".yaml,.yml,.json,.txt" style="margin-bottom:8px">
+  <textarea id="importText" placeholder="Paste the exported test profile here"></textarea>
+  <div class="row" style="justify-content:flex-end;margin-top:12px"><button id="importCancel">Cancel</button><button id="importGo" class="primary">Import</button></div>
+</div></dialog>
+<dialog id="dlgExport"><div class="inner">
+  <h2 style="margin:0 0 6px;font-size:16px">Export <span id="expName"></span></h2>
+  <p style="margin:0 0 12px;color:var(--muted)">Downloads the test profile as a YAML file you can edit and import later.</p>
+  <label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="expSecrets" style="margin-top:3px">
+    <span>Include pasted tokens<br><small style="color:var(--muted)">Treat the file like a password if you include them. Tokens from the consent flow are never exported.</small></span></label>
+  <div class="row" style="justify-content:flex-end;margin-top:14px"><button id="exportCancel">Cancel</button><button id="exportGo" class="primary">Download</button></div>
+</div></dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (tag, attrs = {}, ...kids) => {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) n.setAttribute(k, v === true ? "" : v);
+  }
+  kids.flat(Infinity).forEach(k => n.append(k instanceof Node ? k : document.createTextNode(k ?? "")));
+  return n;
+};
+function toast(text, bad = false) { const m = el("div", {class: "msg" + (bad ? " bad" : "")}, text); $("#toast").append(m); setTimeout(() => m.remove(), bad ? 9000 : 4500); }
+async function api(path, opts = {}) {
+  const r = await fetch(path, opts); const j = await r.json().catch(() => ({ok: false, error: "Unexpected response"}));
+  if (!j.ok) throw new Error(j.error || "Request failed"); return j;
+}
+const send = (method, path, body) => api(path, {method, headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+let META = null, P = null;   // P = profile being edited {id, values, weights, tokens, issues, tenant, step}
+const AK = {AIS: "ais", PIS: "pis", CoF: "cof"};
+const fmtExpiry = s => s <= 0 ? "expired" : s < 3600 ? Math.round(s / 60) + " min" : s < 172800 ? Math.round(s / 3600) + " h" : Math.round(s / 86400) + " days";
+function setActions(nodes, page) { const a = $("#actions"); a.innerHTML = ""; nodes.forEach(n => a.append(n)); $("#brandPage").textContent = "Open Banking Stress Test · " + page; }
+const nav = () => [el("a", {class: "btn", href: "/ob-tenants"}, "Tenant profiles"), el("a", {class: "btn", href: "/"}, "Run a test →")];
+
+// -------------------------------------------------------------------- list ----
+async function showList() {
+  P = null; history.replaceState(null, "", "/ob-profiles");
+  setActions([el("button", {onclick: () => $("#dlgImport").showModal()}, "Import profile"),
+    el("button", {class: "primary", onclick: () => openWizard(null)}, "New test profile"), ...nav()], "Test profiles");
+  META = await api("/ob-profiles/api/meta");
+  const profiles = (await api("/ob-profiles/api/profiles")).profiles;
+  const m = $("#main"); m.innerHTML = "";
+  m.append(el("h1", {}, "Test profiles"), el("p", {class: "lede"},
+    "A test profile runs against one tenant profile and holds what changes from test to test: load, which of its APIs to call, tokens and test data. Choose a test profile on Locust’s start page."));
+  if (!META.tenants.length) {
+    m.append(el("div", {class: "empty"}, el("p", {style: "margin:0 0 14px;font-size:15px"}, "Set up a tenant profile first: a test profile always runs against one."),
+      el("a", {class: "btn", href: "/ob-tenants"}, "Go to Tenant profiles"))); return;
+  }
+  if (!profiles.length) {
+    m.append(el("div", {class: "empty"}, el("p", {style: "margin:0 0 14px;font-size:15px"}, "No test profiles yet."),
+      el("div", {class: "row", style: "justify-content:center"}, el("button", {class: "primary", onclick: () => openWizard(null)}, "Create the first profile"))));
+    return;
+  }
+  const byTenant = {};
+  profiles.forEach(p => (byTenant[p.tenant_name] = byTenant[p.tenant_name] || []).push(p));
+  Object.entries(byTenant).forEach(([tn, ps]) => m.append(el("div", {class: "tgroup"}, el("h2", {class: "tg"}, tn),
+    el("div", {class: "tlist"}, ps.map(p => el("div", {class: "tcard"},
+      el("div", {class: "row", style: "justify-content:space-between;align-items:flex-start"}, el("h3", {}, p.name),
+        el("span", {class: "chip " + (p.ready ? "ok" : "warn"), title: p.issues.join("\n")}, p.ready ? "Ready to run" : "Needs attention")),
+      el("div", {class: "meta"}, el("span", {class: "chip"}, p.users + " users"), el("span", {class: "chip"}, p.user_tps + " req/s each"),
+        el("span", {class: "chip"}, "≈ " + Math.round(p.users * p.user_tps * 10) / 10 + " req/s total"),
+        p.areas.map(a => el("span", {class: "chip"}, a + " · " + p.tests[a] + " API" + (p.tests[a] === 1 ? "" : "s") + " · " +
+          (p.sources[a] === "Consent flow" ? p.tokens[a] + " token" + (p.tokens[a] === 1 ? "" : "s") : "manual tokens")))),
+      !p.ready ? el("div", {style: "font-size:12.5px;color:var(--note)"}, p.issues[0] + (p.issues.length > 1 ? ` (+${p.issues.length - 1} more)` : "")) : "",
+      p.runs.length ? lastRun(p.runs[0]) : el("div", {style: "font-size:12.5px;color:var(--muted)"}, "No runs yet."),
+      el("div", {class: "foot"}, el("button", {class: "primary", onclick: () => openWizard(p.id)}, "Edit"),
+        el("button", {onclick: () => showRuns(p)}, "Runs" + (p.run_count ? ` (${p.run_count})` : "")),
+        el("button", {onclick: () => duplicate(p)}, "Duplicate"), el("button", {onclick: () => openExport(p)}, "Export"),
+        el("button", {class: "danger", onclick: () => del(p)}, "Delete"))))))));
+}
+async function del(p) {
+  if (!confirm(`Delete the test profile “${p.name}” and its tokens? This can’t be undone.`)) return;
+  await send("DELETE", "/ob-profiles/api/profiles/" + p.id); toast("Profile deleted."); showList();
+}
+async function duplicate(p) {
+  const j = await api("/ob-profiles/api/profiles/" + p.id);
+  const v = {...j.values, name: j.values.name + " (copy)"};
+  const n = await send("POST", "/ob-profiles/api/profiles", {values: v, weights: j.values.weights});
+  toast("Copied. Tokens aren’t copied: authorise or paste new ones."); openWizard(n.id);
+}
+let exportId = null;
+function openExport(p) { exportId = p.id; $("#expName").textContent = p.name; $("#expSecrets").checked = false; $("#dlgExport").showModal(); }
+$("#exportCancel").onclick = () => $("#dlgExport").close();
+$("#exportGo").onclick = () => { location.href = `/ob-profiles/api/profiles/${exportId}/export?secrets=${$("#expSecrets").checked ? 1 : 0}`; $("#dlgExport").close(); };
+$("#importCancel").onclick = () => $("#dlgImport").close();
+$("#importFile").onchange = async e => { const f = e.target.files[0]; if (f) $("#importText").value = await f.text(); };
+$("#importGo").onclick = async () => {
+  try { const j = await send("POST", "/ob-profiles/api/import", {text: $("#importText").value}); $("#dlgImport").close();
+    toast("Imported “" + j.values.name + "”." + (j.notes.length ? "\n" + j.notes.join("\n") : "")); openWizard(j.id, j.notes.length ? "profile" : "review");
+  } catch (e) { toast(e.message, true); }
+};
+
+// -------------------------------------------------------------------- runs ----
+const fmtWhen = ts => ts ? new Date(ts * 1000).toLocaleString(undefined, {day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "–";
+const fmtDur = s => s == null ? "–" : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.round(s % 3600 / 60)} min` : s >= 60 ? `${Math.floor(s / 60)} min ${s % 60} s` : `${s} s`;
+const verdictChip = s => s.verdict ? el("span", {class: "chip " + (s.verdict === "Passed" ? "ok" : "warn"), title: s.verdict_text || ""}, s.verdict) : el("span", {class: "chip"}, "No verdict");
+function lastRun(r) {
+  const s = r.summary || {};
+  return el("div", {class: "row", style: "font-size:12.5px;color:var(--muted);gap:6px"}, "Last run " + fmtWhen(s.started) + ":", verdictChip(s),
+    s.requests != null ? `${s.requests.toLocaleString()} requests · ${s.rps} req/s · ${s.error_pct}% errors` : "");
+}
+async function showRuns(p) {
+  history.replaceState(null, "", "/ob-profiles#runs-" + p.id);
+  setActions([el("button", {onclick: showList}, "← All profiles"), el("button", {class: "primary", onclick: () => openWizard(p.id)}, "Edit profile"), ...nav()], "Runs");
+  const j = await api(`/ob-profiles/api/profiles/${p.id}/runs`);
+  const m = $("#main"); m.innerHTML = "";
+  m.append(el("h1", {}, p.name + " · Runs"), el("p", {class: "lede"}, `Every run of this test profile against ${p.tenant_name}, newest first. Reports are created the first time you download them.`));
+  if (!j.runs.length) { m.append(el("div", {class: "empty"}, el("p", {style: "margin:0"}, "No runs yet. Choose this profile on Locust’s start page and press Start."))); return; }
+  const dl = (r, kind, label) => el("a", {class: "btn", href: `/ob-runs/${r.id}/${kind}`, target: kind === "report" || kind === "exemption" ? "_blank" : null, rel: "noopener"}, label);
+  m.append(el("section", {class: "card"}, el("div", {class: "scroll"}, el("table", {style: "min-width:900px"},
+    el("tr", {}, ["Started", "Duration", "Users", "Requests", "Req/s (avg · peak)", "Errors", "p95", "Verdict", "Downloads", ""].map(t => el("th", {}, t))),
+    j.runs.map(r => { const s = r.summary || {};
+      return el("tr", {}, el("td", {}, fmtWhen(s.started), el("div", {style: "font-size:11.5px;color:var(--muted)"}, r.started_by === "headless" ? "headless" : "web")),
+        el("td", {}, fmtDur(s.duration_s)), el("td", {}, s.peak_users ?? "–"), el("td", {}, s.requests != null ? s.requests.toLocaleString() : "–"),
+        el("td", {}, s.rps != null ? `${s.rps} · ${s.peak_rps}` : "–"),
+        el("td", {style: s.error_pct > 0 ? "color:var(--bad)" : ""}, s.error_pct != null ? s.error_pct + "%" : "–"),
+        el("td", {}, s.p95_ms != null ? s.p95_ms + " ms" : "–"), el("td", {}, verdictChip(s)),
+        el("td", {}, el("div", {class: "row"}, dl(r, "report", "Report"), dl(r, "summary", "Summary"), dl(r, "csv", "CSV"))),
+        el("td", {}, el("button", {class: "danger", onclick: async () => {
+          if (!confirm("Delete this run and its reports?")) return;
+          await send("DELETE", "/ob-runs/" + r.id); showRuns(p); }}, "Delete")));
+    })))));
+}
+
+// ------------------------------------------------------------------ wizard ----
+const val = k => P.values[k] ?? "";
+const tenantAreas = () => P.tenant ? P.tenant.areas : [];
+const areasOn = () => tenantAreas().filter(a => val("run_" + AK[a]) === "Yes");
+const steps = () => META.steps.filter(s => !s.area || areasOn().includes(s.area));
+const visible = f => !f.show || Object.entries(f.show).every(([k, v]) => Array.isArray(v) ? v.includes(val(k)) : val(k) === v);
+const fieldsOf = (stepId, filter = () => true) => META.schema.filter(f => f.step === stepId && visible(f) && filter(f));
+
+async function openWizard(id, startStep) {
+  META = META || await api("/ob-profiles/api/meta");
+  if (id) { const j = await api("/ob-profiles/api/profiles/" + id); P = {...j, step: startStep || "profile"}; }
+  else {
+    const values = Object.fromEntries(META.schema.map(f => [f.key, f.default]));
+    const ready = META.tenants.find(t => t.complete) || META.tenants[0];
+    values.tenant = ready ? ready.id : "";
+    values.weights = Object.fromEntries(META.areas.map(a => [a, Object.fromEntries(META.endpoints[a].map(e => [e.key, e.weight]))]));
+    P = {id: null, values, tokens: null, issues: [], tenant: null, step: "profile"};
+    if (values.tenant) await loadTenant();
+  }
+  history.replaceState(null, "", "/ob-profiles#" + (id || "new")); renderWizard();
+}
+async function loadTenant() {   // for a new profile: tenant facts come with the first save
+  const t = META.tenants.find(x => x.id === val("tenant")); if (!t) { P.tenant = null; return; }
+  const j = await api("/ob-tenants/api/tenants/" + t.id);
+  P.tenant = {id: t.id, name: t.name, rs_host: t.rs_host, version: t.version, areas: t.areas,
+    supported: Object.fromEntries(META.areas.map(a => [a, (j.values[AK[a] + "_endpoints"] || "").split(",").filter(Boolean)]))};
+  META.areas.forEach(a => { if (!val(AK[a] + "_tests")) P.values[AK[a] + "_tests"] = P.tenant.supported[a].join(","); });
+}
+async function persist() {
+  const body = {values: P.values, weights: P.values.weights};
+  const j = P.id ? await send("PUT", "/ob-profiles/api/profiles/" + P.id, body) : await send("POST", "/ob-profiles/api/profiles", body);
+  if (!P.id) history.replaceState(null, "", "/ob-profiles#" + j.id);
+  Object.assign(P, {id: j.id, values: j.values, tokens: j.tokens, issues: j.issues, tenant: j.tenant});
+}
+async function go(stepId) {
+  try { if (P.step === "profile" && !val("name").trim()) return toast("Give the profile a name first.", true);
+    if (P.step === "profile" && !val("tenant")) return toast("Choose a tenant profile first.", true);
+    await persist(); P.step = stepId; renderWizard(); window.scrollTo(0, 0);
+  } catch (e) { toast(e.message, true); }
+}
+function renderWizard() {
+  const all = steps(); if (!all.find(s => s.id === P.step)) P.step = all[0].id;
+  const idx = all.findIndex(s => s.id === P.step), step = all[idx];
+  setActions([el("button", {onclick: async () => { try { if (P.id || val("name")) await persist(); } catch (e) {} showList(); }}, "← All profiles"),
+    el("button", {class: "primary", onclick: async () => { try { await persist(); toast("Saved."); renderWizard(); } catch (e) { toast(e.message, true); } }}, "Save"),
+    ...nav()], P.id ? "Edit test profile" : "New test profile");
+  const m = $("#main"); m.innerHTML = "";
+  const stepper = el("nav", {class: "stepper", "aria-label": "Steps"}, all.map((s, i) => el("button", {
+    class: "step" + (s.id === P.step ? " on" : "") + (i < idx ? " done" : ""), onclick: () => go(s.id), disabled: !P.id && i > 0},
+    el("span", {class: "n"}, i < idx ? "✓" : String(i + 1)), s.title)));
+  const body = el("div", {}, el("h1", {}, (val("name") || "New test profile") + " · " + step.title),
+    el("p", {class: "lede"}, step.intro + (P.tenant && step.id !== "profile" ? "  Tenant profile: " + P.tenant.name + " (UK OB v" + P.tenant.version + ")." : "")),
+    ...stepContent(step),
+    el("div", {class: "wfoot"}, idx > 0 ? el("button", {onclick: () => go(all[idx - 1].id)}, "← " + all[idx - 1].title) : el("span"),
+      idx < all.length - 1 ? el("button", {class: "primary", onclick: () => go(all[idx + 1].id)}, all[idx + 1].title + " →")
+        : el("button", {class: "primary", onclick: finish}, "Save test profile")));
+  m.append(el("div", {class: "wiz"}, stepper, body));
+}
+function input(f) {
+  const v = val(f.key), set = e => { P.values[f.key] = e.target.value; };
+  if (f.kind === "tenant") return el("select", {onchange: async e => { P.values.tenant = e.target.value;
+      META.areas.forEach(a => P.values[AK[a] + "_tests"] = ""); await loadTenant(); renderWizard(); }},
+    !META.tenants.length ? el("option", {value: ""}, "No tenants yet") : "",
+    META.tenants.map(t => el("option", {value: t.id, selected: t.id === v}, t.name + (t.complete ? "" : " (tenant profile needs attention)"))));
+  if (f.kind === "choice") return el("select", {onchange: e => { set(e); renderWizard(); }}, f.choices.map(c => el("option", {selected: c === v}, c)));
+  if (f.kind === "textarea") return el("textarea", {oninput: set}, v);
+  if (f.kind === "number") return el("input", {type: "number", min: 0, step: "any", value: v, oninput: e => { set(e); updateTotal(); }});
+  if (f.kind === "secret") { const box = el("input", {type: "password", value: v, autocomplete: "off", oninput: set});
+    return el("div", {class: "inline"}, box, el("button", {type: "button", onclick: () => box.type = box.type === "password" ? "text" : "password"}, "Show")); }
+  return el("input", {type: "text", value: v, oninput: set});
+}
+const fieldNode = f => el("div", {class: "field" + (f.wide || f.kind === "textarea" ? " wide" : "")},
+  el("label", {class: "l"}, f.label), input(f), f.hint ? el("div", {class: "hint"}, f.hint) : "");
+function updateTotal() {
+  const t = $("#totalRps"); if (!t) return;
+  const u = parseFloat(val("users")) || 0, r = parseFloat(val("user_tps")) || 0;
+  t.textContent = r > 0 ? "≈ " + Math.round(u * r * 10) / 10 : "–";
+  $("#totalNote").textContent = r > 0 ? `requests per second in total (${u} users × ${r})` : "users pause 1–3 s between requests";
+}
+function stepContent(step) {
+  if (step.id === "profile") {
+    const t = P.tenant;
+    return [el("section", {class: "card"}, el("h2", {}, "Profile"), el("div", {class: "grid"}, fieldsOf("profile").map(fieldNode)),
+      t ? el("div", {style: "padding:0 16px 16px;color:var(--muted);font-size:13px"},
+        `${t.name} · resource server ${t.rs_host || "(not set)"} · UK OB v${t.version} · supports ${t.areas.join(", ") || "nothing yet"}`) : "")];
+  }
+  if (step.id === "scope") {
+    const checks = META.schema.filter(f => f.step === "scope");
+    const out = [el("section", {class: "card"}, el("h2", {}, "Areas to test", el("small", {}, "only what " + (P.tenant ? P.tenant.name : "the tenant") + " supports")),
+      el("div", {class: "scope"}, checks.map(f => {
+        const area = f.label, ok = tenantAreas().includes(area);
+        return el("label", {style: ok ? "" : "opacity:.5;cursor:default"}, el("input", {type: "checkbox", disabled: !ok, checked: ok && val(f.key) === "Yes",
+          onchange: e => { P.values[f.key] = e.target.checked ? "Yes" : "No"; renderWizard(); }}),
+          el("div", {}, el("b", {}, area), el("span", {}, ok ? f.hint : "Not supported by this tenant profile")));
+      })))];
+    areasOn().forEach(a => out.push(el("section", {class: "card"},
+      el("h2", {}, a + " · APIs to call", el("small", {}, "from the " + P.tenant.supported[a].length + " this tenant profile supports")), testList(a))));
+    return out;
+  }
+  if (step.id === "load") {
+    const multi = areasOn().length > 1;
+    const f = fieldsOf("load", x => !x.show_multi);
+    const mix = fieldsOf("load", x => x.show_multi && multi && areasOn().includes({mix_ais: "AIS", mix_pis: "PIS", mix_cof: "CoF"}[x.key]));
+    const card = el("section", {class: "card"}, el("h2", {}, "Load"), el("div", {class: "grid"}, f.map(fieldNode)),
+      el("div", {class: "total"}, el("b", {id: "totalRps"}), el("span", {id: "totalNote"})));
+    const res = [card];
+    if (mix.length) res.push(el("section", {class: "card"}, el("h2", {}, "Mix of users", el("small", {}, "how the users are shared between the areas")),
+      el("div", {class: "grid"}, mix.map(fieldNode)), el("div", {style: "padding:0 16px 16px;color:var(--muted);font-size:12px"}, "Shares are relative: 60/30/10 and 6/3/1 give the same mix.")));
+    setTimeout(updateTotal);
+    return res;
+  }
+  if (step.area) return areaContent(step.area);
+  if (step.id === "review") return reviewContent();
+  return [];
+}
+
+// -------------------------------------------------------------- area steps ----
+function areaContent(area) {
+  const k = AK[area], srcKey = k + "_source", src = val(srcKey);
+  const ticked = new Set((val(k + "_tests") || "").split(",").filter(Boolean));
+  const seg = el("div", {class: "seg", role: "group", "aria-label": "How tokens are supplied"}, ["Manual tokens", "Consent flow"].map(o =>
+    el("button", {"aria-pressed": String(src === o), onclick: () => { P.values[srcKey] = o; renderWizard(); }}, o === "Manual tokens" ? "Paste tokens" : "Consent flow")));
+  const tokenFields = fieldsOf(area, f => !f.testdata && !["source", "tests"].includes(f.kind) && f.show && f.show[srcKey]);
+  // test data: always with the consent flow (consents are built from it); otherwise only when a ticked API needs it
+  const data = fieldsOf(area, f => f.testdata && (src === "Consent flow" || (f.data_for || []).some(x => ticked.has(x))));
+  const dataPanel = data.length ? el("div", {class: "embed"}, el("h3", {}, area + " test data",
+      el("small", {}, src === "Consent flow" ? " used to create the consents below" : " needed by the APIs you ticked")),
+    el("div", {class: "grid", style: "padding:12px 0 0"}, data.map(fieldNode))) : "";
+  const intro = src === "Consent flow"
+    ? "Create consents here and approve them in the financial institution’s page; tokens are collected automatically."
+    : "Paste tokens you already have. Consent steps are skipped.";
+  return [el("section", {class: "card"}, el("h2", {}, area + " tokens"),
+    el("div", {class: "panel", style: "border-bottom:0"},
+      el("div", {class: "row", style: "justify-content:space-between;margin-bottom:6px"}, el("h3", {}, "How are tokens supplied?"), seg),
+      el("p", {style: "margin:0 0 14px;color:var(--muted);font-size:13px"}, intro),
+      src === "Consent flow" ? [dataPanel, flowPanel(area)] : [tokenFields.length ? el("div", {class: "grid", style: "padding:0"}, tokenFields.map(fieldNode)) : "", dataPanel]))];
+}
+function testList(area) {
+  const key = AK[area] + "_tests", supported = new Set(P.tenant.supported[area]);
+  const chosen = new Set((val(key) || "").split(",").filter(k => supported.has(k)));
+  const weights = P.values.weights[area] = P.values.weights[area] || {};
+  const save = () => { P.values[key] = META.endpoints[area].filter(e => chosen.has(e.key)).map(e => e.key).join(","); };
+  const eps = META.endpoints[area].filter(e => supported.has(e.key));
+  const groups = [...new Set(eps.map(e => e.group))];
+  const list = el("div", {class: "eplist"}, groups.map(g => el("div", {class: "group"}, el("h4", {}, g), eps.filter(e => e.group === g).map(e => {
+    const missing = e.needs && chosen.has(e.key) && !chosen.has(e.needs);
+    return el("label", {class: "ep" + (chosen.has(e.key) ? "" : " off")},
+      el("input", {type: "checkbox", checked: chosen.has(e.key), onchange: ev => { ev.target.checked ? chosen.add(e.key) : chosen.delete(e.key); save(); renderWizard(); }}),
+      el("span", {class: "m " + e.method}, e.method),
+      el("span", {class: "path"}, e.path, e.desc ? el("small", {}, e.desc) : "",
+        missing ? el("small", {class: "need"}, "Needs “" + META.endpoints[area].find(x => x.key === e.needs).path + "” ticked too") : ""),
+      el("span", {class: "wt", onclick: ev => ev.preventDefault()}, "weight",
+        el("input", {type: "number", min: 0, step: 1, value: weights[e.key] ?? e.weight, disabled: !chosen.has(e.key),
+          oninput: ev => { weights[e.key] = Math.max(0, parseInt(ev.target.value || "0")); }})));
+  }))));
+  const all = on => { eps.forEach(e => on ? chosen.add(e.key) : chosen.delete(e.key)); save(); renderWizard(); };
+  return el("div", {}, el("div", {class: "eptools"}, el("b", {}, chosen.size + " of " + eps.length + " ticked"),
+    el("div", {class: "row"}, el("button", {class: "link", onclick: () => all(true)}, "Select all"), el("button", {class: "link", onclick: () => all(false)}, "Clear"))),
+    list, el("div", {style: "padding:0 16px 16px;color:var(--muted);font-size:12px"}, "Weight = how often an endpoint is called relative to the others. APIs the tenant profile doesn’t support aren’t listed."));
+}
+const pasteOpen = {};   // consent id -> show the paste box for that consent
+function flowPanel(area) {
+  const count = el("input", {type: "number", min: 1, max: 200, value: area === "PIS" ? 5 : 1, style: "width:80px"});
+  const t = P.tokens || {pending: [], AIS: [], PIS: [], CoF: []};
+  const pend = t.pending.filter(p => p.area === area), ready = t[area] || [];
+  const kind = {AIS: "account access", PIS: "payment", CoF: "funds confirmation"}[area];
+  const auto = P.tenant && P.tenant.redirect_uri === META.callback;
+  const pasteRow = p => {
+    const inp = el("input", {type: "text", placeholder: "Paste the redirect URL, or just the authorisation code", style: "flex:1;min-width:260px"});
+    return el("tr", {class: "pasterow"}, el("td", {colspan: 4}, el("div", {class: "row"}, inp,
+      el("button", {class: "primary", onclick: e => completeAuth(inp, e.target, p.state)}, "Complete"),
+      el("button", {onclick: () => { delete pasteOpen[p.consent_id]; renderWizard(); }}, "Cancel"))));
+  };
+  return el("div", {class: "flow"},
+    el("h3", {style: "margin:18px 0 8px"}, "Consents"),
+    auto ? "" : el("div", {class: "banner", style: "margin:0 0 12px"}, "The tenant profile’s redirect URL isn’t this app (" + META.callback +
+      "), so approvals can’t be caught automatically. After approving, use “Paste redirect or code”."),
+    el("div", {class: "row", style: "margin-bottom:12px"}, `Create ${kind} consents:`, count,
+      el("button", {class: "primary", onclick: e => createConsents(area, count.value, e.target)}, "Create"),
+      el("span", {style: "color:var(--muted);font-size:12px"}, area === "PIS" ? "each is used for a single payment" : "then open each Authorise link and approve")),
+    el("div", {class: "scroll"}, el("table", {}, el("tr", {}, el("th", {}, "Consent"), el("th", {}, "Status"), el("th", {}, "Token expires"), el("th", {}, "")),
+      !pend.length && !ready.length ? el("tr", {}, el("td", {colspan: 4, style: "color:var(--muted)"}, "No consents yet.")) : "",
+      pend.map(p => [el("tr", {}, el("td", {class: "mono"}, p.consent_id),
+          el("td", {}, el("span", {class: "waiting"}, el("span", {class: "dot"}), auto ? "Waiting for approval…" : "Waiting for approval")), el("td", {}, "–"),
+          el("td", {}, el("div", {class: "row"}, el("a", {class: "btn primary-link", href: p.url, target: "_blank", rel: "noopener"}, "Authorise ↗"),
+            el("button", {onclick: () => { pasteOpen[p.consent_id] = !pasteOpen[p.consent_id]; renderWizard(); }}, auto ? "Didn’t come back?" : "Paste redirect or code"),
+            el("button", {onclick: () => removeToken("pending", p.consent_id)}, "Remove")))),
+        pasteOpen[p.consent_id] ? pasteRow(p) : ""]),
+      ready.map(x => el("tr", {}, el("td", {class: "mono"}, x.consent_id), el("td", {}, el("span", {style: "color:var(--ok)"}, area === "PIS" ? "Ready · 1 payment" : "Ready")),
+        el("td", {}, x.expires_in <= 0 ? (x.refresh ? "Expired · renews on next use" : "Expired · authorise a new consent") : fmtExpiry(x.expires_in) + (x.refresh ? " · renews automatically" : "")),
+        el("td", {}, el("button", {onclick: () => removeToken(area, x.consent_id)}, "Remove")))))),
+    pend.length && auto ? el("p", {style: "margin:8px 0 0;color:var(--muted);font-size:12px"},
+      "Approve in the financial institution’s page; this list updates by itself when it redirects back here.") : "");
+}
+async function refreshTokens() { if (!P || !P.id) return;
+  try { const before = P.tokens ? P.tokens.pending.length : 0;
+    P.tokens = (await api(`/ob-profiles/api/profiles/${P.id}/tokens`)).tokens;
+    if (P.tokens.pending.length < before) toast("Approval received: token stored.");
+    if (META.areas.includes(P.step) && !document.activeElement.closest?.(".pasterow")) renderWizard(); } catch (e) {} }
+setInterval(() => { if (P && P.tokens && P.tokens.pending.length) refreshTokens(); }, 2500);
+async function createConsents(area, count, btn) {
+  btn.disabled = true;
+  try { await persist(); const j = await send("POST", `/ob-profiles/api/profiles/${P.id}/consents`, {area, count: Number(count) || 1});
+    P.tokens = j.tokens; renderWizard(); toast(`${j.created.length} consent(s) created. Open each Authorise link to approve.`);
+  } catch (e) { toast(e.message, true); btn.disabled = false; }
+}
+async function completeAuth(input, btn, state) {
+  if (!input.value.trim()) return toast("Paste the redirect URL or the authorisation code first.", true);
+  btn.disabled = true;
+  try { const j = await send("POST", "/ob-profiles/api/complete", {url: input.value.trim(), state});
+    Object.keys(pasteOpen).forEach(k => delete pasteOpen[k]); P.tokens = j.tokens; renderWizard();
+    toast(`Token stored for ${j.result.area} consent ${j.result.consent_id}` + (j.result.refresh ? " (renews automatically)" : ""));
+  } catch (e) { toast(e.message, true); btn.disabled = false; }
+}
+async function removeToken(area, consent_id) { P.tokens = (await send("POST", `/ob-profiles/api/profiles/${P.id}/tokens`, {area, consent_id})).tokens; renderWizard(); }
+
+// ------------------------------------------------------------------ review ----
+function reviewContent() {
+  const u = parseFloat(val("users")) || 0, r = parseFloat(val("user_tps")) || 0;
+  const rows = [["Profile", `${val("name")} · tenant profile ${P.tenant ? P.tenant.name : "–"}`, "profile"],
+    ["Scope", areasOn().join(", ") || "–", "scope"],
+    ["Load", `${u} users · ramp up ${val("spawn_rate")}/s · ${r} req/s each · ≈ ${Math.round(u * r * 10) / 10} req/s total` +
+      (areasOn().length > 1 ? " · mix " + areasOn().map(a => a + " " + val("mix_" + AK[a])).join(" / ") : ""), "load"],
+    ...areasOn().map(a => [a, `${(val(AK[a] + "_tests") || "").split(",").filter(Boolean).length} APIs · ${val(AK[a] + "_source")}` +
+      (val(AK[a] + "_source") === "Consent flow" ? ` · ${(P.tokens && P.tokens[a] || []).length} token(s)` : ""), a])];
+  return [el("section", {class: "card"}, el("h2", {}, "Summary"), el("div", {class: "review"}, rows.map(([t, v, s]) => el("div", {class: "sec"},
+      el("b", {}, t), el("div", {class: "vals"}, v), el("button", {class: "link", onclick: () => go(s)}, "Edit"))))),
+    el("section", {class: "card"}, el("h2", {}, P.issues.length ? "Still to do before running" : "Ready to run"),
+      el("div", {style: "padding:14px 16px"}, P.issues.length ? el("ul", {class: "issues"}, P.issues.map(i => el("li", {}, i)))
+        : el("p", {style: "margin:0;color:var(--ok)"}, "Choose this profile on Locust’s start page and press Start."),
+        P.id ? el("div", {class: "row", style: "margin-top:12px"}, el("button", {onclick: async () => {
+          const p = (await api("/ob-profiles/api/profiles")).profiles.find(x => x.id === P.id); if (p) showRuns(p); }}, "See runs of this profile")) : ""))];
+}
+async function finish() { try { await persist(); toast("Test profile “" + val("name") + "” saved."); showList(); } catch (e) { toast(e.message, true); } }
+
+// -------------------------------------------------------------------- boot ----
+fetch("/ob-brand/info").then(r => r.json()).then(b => {
+  const mark = $("#brandMark"); mark.textContent = b.name;
+  if (b.logo) { mark.before(el("img", {src: "/ob-brand/logo?on=dark", alt: b.name_with_logo ? "" : b.name})); if (!b.name_with_logo) mark.remove(); }
+}).catch(() => {});
+(async () => {
+  try { META = await api("/ob-profiles/api/meta"); const h = location.hash.slice(1);
+    if (h === "new") openWizard(null);
+    else if (h.startsWith("runs-")) { const p = (await api("/ob-profiles/api/profiles")).profiles.find(x => x.id === h.slice(5)); p ? showRuns(p) : showList(); }
+    else if (h) openWizard(h).catch(showList); else showList();
+  } catch (e) { toast("Could not load: " + e.message, true); }
+})();
+</script>
+</body>
+</html>

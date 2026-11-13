@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Completing authorisation…</title>
+<link rel="stylesheet" href="/ob-brand/theme.css">
+<style>
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);
+font:15px/1.5 var(--font)}
+.card{background:var(--card);border-radius:10px;padding:28px 32px;max-width:520px;box-shadow:0 4px 20px rgba(0,0,0,.08);border-top:4px solid var(--navy)}
+.mark{font-weight:700;color:var(--navy);margin-bottom:14px;font-size:14px}
+.mark img{height:24px}
+@media (prefers-color-scheme:dark){.mark{color:var(--ink)}.card{border-top-color:var(--accent)}}
+h1{font-size:18px;margin:0 0 8px} p{margin:0 0 8px;color:var(--muted)} .ok{color:var(--ok)} .bad{color:var(--bad)}
+a{color:inherit}
+</style>
+</head>
+<body>
+<div class="card"><div class="mark" id="mark">Ozone API</div><h1 id="t">Completing authorisation…</h1><p id="m">Exchanging the code for tokens.</p></div>
+<script>
+fetch("/ob-brand/info").then(r=>r.json()).then(b=>{const m=document.getElementById("mark");m.textContent="";if(b.logo){const i=new Image();i.src=matchMedia("(prefers-color-scheme: dark)").matches?"/ob-brand/logo?on=dark":"/ob-brand/logo";i.style.height="28px";i.alt=b.name_with_logo?"":b.name;i.style.verticalAlign="middle";m.append(i)}if(!b.logo||b.name_with_logo){const t=document.createElement("span");t.textContent=b.name;t.style.marginLeft=b.logo?"8px":"0";t.style.verticalAlign="middle";m.append(t)}});
+fetch("/ob-tenants/api/complete", {method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify({url: location.href})})
+  .then(r => r.json())
+  .then(j => {
+    const t = document.getElementById("t"), m = document.getElementById("m");
+    if (j.ok) {
+      t.textContent = "Authorised"; t.className = "ok";
+      m.innerHTML = `Token stored for ${j.result.kind.toUpperCase()} consent ${j.result.consent_id}. ` +
+        `You can close this tab and return to the <a href="/ob-profiles">Test profiles page</a>.`;
+    } else {
+      t.textContent = "Not completed"; t.className = "bad"; m.textContent = j.error;
+    }
+  });
+// Remove the code from the address bar so it isn't reused or shared
+history.replaceState(null, "", "/ob-callback");
+</script>
+</body>
+</html>

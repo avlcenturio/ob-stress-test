@@ -1,0 +1,88 @@
+# Facts the Locust data can't provide. Fill in, then:
+#   python exemption_report.py results/run1 --config exemption_config.yaml --pdf
+# Leave a field out (or empty) and its row is omitted from the report.
+
+aspsp:
+  name: Example Bank A/S
+  competent_authority: Finanstilsynet (Danish FSA)
+  logo: ""                      # optional path to a PNG/SVG/JPG, embedded in the report
+  accent: ""                    # heading colour; empty = the brand navy (brand/brand.json)
+
+document:
+  title: Stress test results of the PSD2 dedicated interface
+  version: "1.0"
+  date: 2026-05-20
+  classification: Confidential – for submission to the competent authority
+  prepared_by: Performance Engineering
+  reviewed_by: Head of Open Banking
+  approved_by: Chief Technology Officer
+  distribution: Finanstilsynet; internal compliance
+  referenced_documents:
+    - Stress test detailed results (raw Locust CSV and Grafana exports)
+    - Dedicated interface service level targets, v2.3
+  sign_off:
+    - {role: Head of Open Banking, name: ""}
+    - {role: Chief Technology Officer, name: ""}
+    - {role: Head of Compliance, name: ""}
+
+test:
+  date: 2026-05-19
+  performed_by: Example Bank performance engineering team, with the Open Banking platform team
+  interface: Berlin Group NextGenPSD2 dedicated interface
+  standard: NextGenPSD2 XS2A Framework 1.3.12
+  tool: Locust 2.32 (distributed, 1 master and 4 workers)
+  services_offered: [AIS, PIS, CoF]     # what the dedicated interface offers in production
+  load_model:
+    psu_peak_concurrent: 20
+    test_concurrent: 100
+    ramp_up: 100 users over 12 seconds, then held for 5 minutes
+    basis: >-
+      The basis for the load model is the highest number of concurrently active customers on the
+      online and mobile banking channels over the last 12 months (20 PSUs, from production
+      analytics). The test applied five times that load to demonstrate headroom for a growing
+      TPP market.
+  tpps:                                 # GL 4.2(a): separate eIDAS certificates / client IDs
+    - {name: Test TPP 1, roles: [AISP], notes: QWAC + client ID 1}
+    - {name: Test TPP 2, roles: [PISP], notes: QWAC + client ID 2}
+    - {name: Test TPP 3, roles: [CBPII], notes: QWAC + client ID 3}
+    - {name: Test TPP 4, roles: [AISP, PISP], notes: QWAC + client ID 4}
+  large_data: >-
+    Transaction requests covered 13 months of history on test accounts holding up to 5,000
+    transactions each, including paginated responses.
+  scenarios:
+    - {name: Consent lifecycle, description: "Create, read and delete account access consents."}
+    - {name: Account information, description: "Accounts, balances and transactions for each consented account."}
+    - {name: Payment initiation, description: "Initiate SEPA credit transfers and poll payment status."}
+    - {name: Confirmation of funds, description: "Funds confirmation requests against test accounts."}
+  environment:
+    name: Pre-production
+    description: >-
+      The test ran against the pre-production dedicated interface and its underlying
+      pre-production systems, including core banking. Pre-production mirrors production in
+      architecture, software versions and sizing.
+    differences_from_production: None material. Pre-production runs the same container sizing and autoscaling rules.
+    load_generator: Dedicated load-generation hosts in the same cloud region, outside the bank's network
+  monitoring:
+    description: >-
+      DevOps and software engineers monitored the environment throughout the test using
+      logging, alerting and visualisation tools.
+    tools: [Grafana, Prometheus, Kibana, PagerDuty]
+    observed_by: Platform on-call engineers and core banking operations
+  issues: []                            # e.g. - {id: ST-1, severity: Medium, description: ..., resolution: ..., status: Closed}
+  resource_observations:
+    memory_leak: None observed. Heap and container memory returned to baseline within 2 minutes of the test ending.
+    cpu_peak: 61% on API gateway nodes, 48% on application nodes
+    memory_peak: 58% of allocated memory
+    backend: Core banking response times stayed within normal operating range
+
+service_levels:
+  avg_response_ms: 500
+  p95_ms: 1000
+  max_error_pct: 1.0
+  apdex_t_ms: 500
+  apdex_f_ms: 1500
+  psu_interface:                         # Art. 32(2): compare with the customer channel
+    avg_response_ms: 420
+    p95_ms: 1100
+    success_pct: 99.5
+    source: production monitoring, April 2026
