@@ -1,0 +1,25 @@
+# --- never commit secrets or test data ---
+.env
+.env.*
+!.env.example
+certs/*
+!certs/.gitkeep
+tls/
+*.pem
+*.key
+*.p12
+*.pfx
+ob_settings.json
+ob_tenants.json
+ob_profiles.json
+ob_tokens.json
+*-with-secrets.yaml
+*.yaml.secret
+results/*
+!results/.gitkeep
+
+# --- local clutter ---
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

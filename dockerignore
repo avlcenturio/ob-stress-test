@@ -1,0 +1,16 @@
+.git
+.env
+.venv
+__pycache__/
+*.pyc
+results/
+certs/
+tls/
+examples/
+ob_tenants.json
+ob_profiles.json
+ob_tokens.json
+ob_settings.json
+*.yaml.secret
+docker-compose*.yml
+setup.sh
