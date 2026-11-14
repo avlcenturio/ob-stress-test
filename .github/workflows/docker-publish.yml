@@ -4,7 +4,7 @@
 #   push a tag v1.2.3     -> image tags :1.2.3, :1.2, :latest   (+ deploy, if switched on)
 #
 # Repository settings (Settings → Secrets and variables → Actions):
-#   variables  DOCKERHUB_REPO   e.g. yourname/ozone-ob-stress-test
+#   variables  DOCKERHUB_REPO   e.g. yourname/ob-stress-test
 #              DEPLOY_ENABLED   true  to deploy version tags to your server
 #   secrets    DOCKERHUB_USERNAME, DOCKERHUB_TOKEN  (Docker Hub access token, read & write)
 #              DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_PATH  (only for deployment)

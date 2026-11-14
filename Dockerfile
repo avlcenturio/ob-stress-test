@@ -1,6 +1,6 @@
 # Ozone API – Open Banking Stress Test
-#   docker build -t ozone-ob-stress-test .
-#   docker run -d -p 127.0.0.1:8089:8089 -v ob-data:/data ozone-ob-stress-test
+#   docker build -t ob-stress-test .
+#   docker run -d -p 127.0.0.1:8089:8089 -v ob-data:/data ob-stress-test
 FROM python:3.12-slim-bookworm
 
 # PDF reports need a headless Chromium (~400 MB). Build with --build-arg WITH_PDF=false to leave it out.

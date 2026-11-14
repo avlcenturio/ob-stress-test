@@ -1,9 +1,9 @@
 # Local:   docker compose up -d --build        then open http://localhost:8089
 # Server:  see docker-compose.server.yml (login + HTTPS)
 services:
-  stress-test:
+  ob-stress-test:
     build: .
-    image: ozone-ob-stress-test:latest
+    image: ob-stress-test:latest
     ports:
       - "${OB_BIND:-127.0.0.1}:8089:8089"   # 127.0.0.1 = this machine only; set OB_BIND=0.0.0.0 on a server
     volumes:

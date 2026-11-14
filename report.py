@@ -294,7 +294,36 @@ def load_timeline(prefix):
     names = sorted({k for s in secs for k in s[3]})
     ep = {k: ([by[s][3].get(k, [0, 0])[0] if s in by else 0 for s in span],
               [by[s][3].get(k, [0, 0])[1] if s in by else 0 for s in span]) for k in names}
-    return {"t0": t0, "ts": span, "n": n, "err": err, "ep": ep, "errors": data.get("errors") or {}}
+    wait_n = [by[s][4][0] if s in by and len(by[s]) > 4 else 0 for s in span]
+    wait_ms = [by[s][4][1] if s in by and len(by[s]) > 4 else 0 for s in span]
+    rtt = [x for x in (data.get("rtt") or []) if x[1] is not None]
+    return {"t0": t0, "ts": span, "n": n, "err": err, "ep": ep, "errors": data.get("errors") or {},
+            "phases": data.get("phases") or {}, "rtt": rtt, "wait_n": wait_n, "wait_ms": wait_ms}
+
+
+def median_rtt(tl):
+    vals = sorted(x[1] for x in (tl or {}).get("rtt") or [])
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    return vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2
+
+
+def time_split(tl):
+    """Per endpoint, average milliseconds per request: connection setup, network, server (estimated), download."""
+    rtt = median_rtt(tl) or 0.0
+    out = {}
+    for name, p in (tl or {}).get("phases", {}).items():
+        n = p.get("n") or 0
+        if not n:
+            continue
+        setup = (p["tcp_ms"] + p["tls_ms"]) / n
+        wait = p["wait_ms"] / n
+        network = min(rtt, wait)
+        out[name] = {"setup": setup, "network": network, "server": max(0.0, wait - network),
+                     "download": p["dl_ms"] / n, "total": p["total_ms"] / n, "n": n, "new_conns": p["conn_n"],
+                     "tcp": p["tcp_ms"] / max(1, p["conn_n"]), "tls": p["tls_ms"] / max(1, p["conn_n"])}
+    return out
 
 
 def _window(values, w=10):
@@ -394,6 +423,44 @@ def chart_other_errors(tl):
     return to_svg(fig)
 
 
+def chart_time_split(split, slo):
+    names = sorted(split, key=lambda k: split[k]["total"])
+    parts = [("setup", "Connection setup (TCP + TLS)", C_USERS), ("network", "Network round trip", C_P50),
+             ("server", "Server processing (estimated)", C_P95), ("download", "Download", C_P99)]
+    fig, ax = plt.subplots(figsize=(9, 0.42 * len(names) + 1.3))
+    left = [0.0] * len(names)
+    labels = [k.split(" ", 1)[-1] if " " in k else k for k in names]
+    for key, lab, col in parts:
+        vals = [split[k][key] for k in names]
+        ax.barh(labels, vals, left=left, color=col, height=0.6, label=lab)
+        left = [a + b for a, b in zip(left, vals)]
+    for y, k in enumerate(names):
+        ax.annotate(f"{split[k]['total']:,.0f} ms", (left[y], y), xytext=(4, 0), textcoords="offset points",
+                    va="center", fontsize=8.5)
+    ax.axvline(slo, color=C_BAD, lw=1, ls="--")
+    ax.set_xlim(0, max(left + [slo]) * 1.15)
+    ax.set_xlabel("Average per request (ms)")
+    ax.grid(axis="y", visible=False)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2, fontsize=8.5)
+    return to_svg(fig)
+
+
+def chart_network(tl):
+    x = [(s - tl["t0"]) / 60 for s in tl["ts"]]
+    wn, wm = _window(tl["wait_n"]), _window(tl["wait_ms"])
+    wait = [m / n if n else None for n, m in zip(wn, wm)]
+    fig, ax = plt.subplots(figsize=(9, 3.0))
+    ax.plot(x, wait, color=C_P95, lw=1.6, label="Waiting for the first byte (all endpoints, 10 s average)")
+    rx = [(s - tl["t0"]) / 60 for s, _ in tl["rtt"]]
+    ax.plot(rx, [v for _, v in tl["rtt"]], color=C_P50, lw=1.4, marker="o", ms=2.5,
+            label="Network round trip (TCP connect)")
+    ax.set_ylabel("ms")
+    ax.set_xlabel("Minutes into test")
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2, fontsize=8.5)
+    return to_svg(fig)
+
+
 def degradation_from_timeline(tl, hist, args):
     """First moment an endpoint's 10 s average or the 5xx share stayed over the benchmark for --sustain seconds."""
     start = args.warmup
@@ -414,6 +481,13 @@ def label(e):
     """Endpoint label; avoids 'GET GET /x' when the request name already has the method."""
     name, method = e.get("name") or e.get("Name", ""), e.get("method") or e.get("Method", "")
     return name if name.upper().startswith(method.upper() + " ") else f"{method} {name}".strip()
+
+
+def fmt_ms_fine(v):
+    """Like fmt_ms, but keeps one decimal under 10 ms (network round trips can be well under 1 ms)."""
+    if v is None:
+        return "–"
+    return f"{v:.1f} ms" if v < 10 else fmt_ms(v)
 
 
 def fmt_ms(v):
@@ -733,11 +807,13 @@ BENCH_NOTE = ("Throughput is set from the existing digital channel: the requests
 def build_html(ctx):
     e = html.escape
     a = ctx["args"]
+    split = ctx.get("split") or {}
     run_id = str((ctx.get("run_ctx") or {}).get("run_id", ""))
     charts = ctx["charts"]
     tgt = ctx.get("target")
     rows = "".join(
         f"<tr><td class=\"l\">{e(label(x))}</td><td>{x['count']:,}</td><td>{fmt_ms(x['avg'])}</td>"
+        f"<td>{fmt_ms(split[x['name']]['server']) if x['name'] in split else '–'}</td>"
         f"<td>{fmt_ms(x['p95'])}</td><td>{x.get('n5xx', 0):,}</td>"
         f"<td>{x.get('n4xx', 0):,}" + (f" ({100.0 * x.get('n4xx', 0) / x['count']:.1f}%)" if x.get('n4xx') and x['count'] else "") + "</td>"
         f"<td class=\"{'ok' if x['ok'] else 'bad'}\">{('Pass' if x['ok'] else 'Fail') if is_api(x) else '–'}</td></tr>"
@@ -788,6 +864,19 @@ def build_html(ctx):
                      + charts["avg_time"])
     parts.append("<h3>Average response time per endpoint</h3><p class=\"note\">Over the whole run, slowest first, "
                  f"against the benchmark.</p>{charts['endpoints']}")
+    if charts.get("split"):
+        parts.append("<h3>Where the time goes</h3><p class=\"note\">Average per request, per endpoint. "
+                     "<b>Connection setup</b> is paid only when a new connection is opened (TCP and TLS handshake), "
+                     "so it is spread over all requests. <b>Network round trip</b> is the measured time to reach the "
+                     "resource server and back. <b>Server processing</b> is the rest of the wait for the first byte: "
+                     "an estimate of the financial institution’s own time. <b>Download</b> is receiving the response "
+                     "body, which grows with response size.</p>" + charts["split"])
+    if charts.get("network"):
+        parts.append("<h3>Network latency over time</h3><p class=\"note\">The network round trip is measured every "
+                     "5 seconds by opening a TCP connection to the resource server. If both lines rise together, the "
+                     "network slowed down; if only the wait for the first byte rises, the server did. A TCP connect "
+                     "also includes the server accepting the connection, so it can rise briefly when many connections "
+                     "open at once, for example at the start of a run.</p>" + charts["network"])
     if charts.get("latency"):
         parts.append("<h3>Response time percentiles</h3><p class=\"note\">For engineers: p50, p95 and p99 across all "
                      "endpoints. Informational only; Locust rounds these (10 ms steps between 100 ms and 1 s).</p>"
@@ -812,7 +901,8 @@ def build_html(ctx):
     parts.append(f"<h2>4. Endpoints summary</h2><p class=\"note\">Sorted by average response time. An endpoint passes "
                  f"when its average is ≤ {a.avg_ms:,.0f} ms and 5xx ≤ {a.max_5xx_pct:g}%. Token and settings lines "
                  "are shown for information only.</p><div class=\"scroll\"><table><thead><tr><th class=\"l\">"
-                 "Endpoint</th><th>Requests</th><th>Average</th><th>p95</th><th>5xx</th><th>4xx</th><th>Status</th>"
+                 "Endpoint</th><th>Requests</th><th>Average</th><th>Server (est.)</th><th>p95</th><th>5xx</th><th>4xx</th>"
+                 "<th>Status</th>"
                  f"</tr></thead><tbody>{rows}</tbody></table></div>")
     parts.append(f"<footer>Generated {e(fmt_time(datetime.now(timezone.utc).timestamp()))} from "
                  f"{e(os.path.basename(ctx['prefix']))}_*.csv</footer></main>{PDF_JS}</body></html>")
@@ -832,6 +922,15 @@ def build_md(ctx):
     lines += [""]
     if ctx["notes"] and ctx["verdict"][0] != "Passed":
         lines += ["## What we found", ""] + [f"- {n}" for n in ctx["notes"]] + [""]
+    split = ctx.get("split") or {}
+    if split:
+        lines += ["## Where the time goes (average per request)", "",
+                  "| Endpoint | Connection setup | Network | Server (est.) | Download | Total | New connections |",
+                  "|---|---:|---:|---:|---:|---:|---:|"]
+        lines += [f"| {k} | {fmt_ms_fine(v['setup'])} | {fmt_ms_fine(v['network'])} | {fmt_ms_fine(v['server'])} | "
+                  f"{fmt_ms_fine(v['download'])} | {fmt_ms_fine(v['total'])} | {v['new_conns']:,} |"
+                  for k, v in sorted(split.items(), key=lambda kv: -kv[1]["total"])]
+        lines += [""]
     lines += ["## Errors by type", "", "| Type | Counts towards benchmark | Requests | Share | Where / when |",
               "|---|---|---:|---:|---|"]
     lines += [f"| {r['label']} | {'Yes' if r['counts'] else 'No'} | {r['count']:,} | {r['share']:.2f}% | "
@@ -897,8 +996,11 @@ def main():
             facts.append(("Sustained throughput", f"{assess['sustained']:,.1f} req/s"))
     if target:
         facts.append(("Throughput target", f"{target['value']:g} req/s"))
+    split = time_split(tl)
+    rtt = median_rtt(tl)
     facts += [("Total requests", f"{total['count']:,}"),
               ("Average response", fmt_ms(total["avg"])),
+              ] + ([("Network round trip (median)", fmt_ms_fine(rtt))] if rtt is not None else []) + [
               ("5xx error rate", f"{assess['pct5xx']:.2f}%")]
     if bp:
         facts.append(("Degradation point", f"{bp['users']:,.0f} users"))
@@ -921,6 +1023,10 @@ def main():
     if len(hist) > 1:
         charts.update(throughput=chart_throughput(hist, bp, target), latency=chart_latency(hist, bp))
         if tl:
+            if split:
+                charts["split"] = chart_time_split(split, args.avg_ms)
+            if tl["rtt"]:
+                charts["network"] = chart_network(tl)
             charts.update(avg_time=chart_avg_over_time(tl, args.avg_ms, bp["ts"] if bp else None),
                           e5xx=chart_5xx(tl, args.max_5xx_pct), eother=chart_other_errors(tl))
         else:
@@ -936,7 +1042,7 @@ def main():
         "verdict": verdict_text(assess, total, hist, bp, args), "checks": assess["checks"],
         "facts": facts, "notes": assess["findings"] + ([f"Performance started to degrade at about {bp['users']:,.0f} concurrent users."] if bp else []),
         "endpoints": endpoints, "failures": failures, "charts": charts, "error_types": error_types,
-        "callout": callout, "callout_text": callout_text,
+        "callout": callout, "callout_text": callout_text, "split": split,
     }
     out_html = args.out or f"{args.prefix}_report.html"
     out_md = os.path.splitext(out_html)[0].removesuffix("_report") + "_summary.md"

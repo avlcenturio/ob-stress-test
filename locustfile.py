@@ -172,15 +172,40 @@ def configure(environment):
         toks = [t.get("aisp_token", "")] + (t.get("aisp_more_tokens") or "").splitlines()
         c.ais_entries = [{"consent_id": "", "access_token": x.strip(), "refresh_token": ""} for x in toks if x.strip()]
     c.ais_cycle = itertools.cycle(c.ais_entries or [None])
-    # PIS: authorised consents are single-use
+    # PIS: each authorised consent is submitted as a payment exactly once; reads are repeatable
     if c.flow["PIS"]:
-        c.authorised = collections.deque(store["pis"])
+        pis_entries = [dict(e) for e in store["pis"]]
     else:
-        c.authorised = collections.deque()
+        pis_entries = []
         for line in (t.get("pisp_authorised") or "").splitlines():
-            cid, _, tok = line.partition(",")
-            if cid.strip() and tok.strip():
-                c.authorised.append({"consent_id": cid.strip(), "access_token": tok.strip()})
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) >= 2 and parts[0] and parts[1]:
+                ptype = parts[2] if len(parts) > 2 and parts[2] in core.PAYMENT_TYPES else "domestic"
+                pis_entries.append({"consent_id": parts[0], "access_token": parts[1], "ptype": ptype})
+    for e in pis_entries:
+        e.setdefault("ptype", "domestic")
+    pis_keys = set(c.eps.get("PIS", []))
+    c.pis_types = sorted({k.split(":")[0] for k in pis_keys})
+    c.pis = {"to_submit": collections.deque(e for e in pis_entries if f"{e['ptype']}:submit" in pis_keys),
+             "authorised": [e for e in pis_entries if e["ptype"] in c.pis_types],
+             "used": set(), "payments": [], "created": collections.deque(maxlen=500), "notices": set()}
+    once = {e["key"] for e in core.ENDPOINTS["PIS"] if e.get("once")}
+    weights = (t.get("weights") or {}).get("PIS", {})
+    c.pis_actions = [(k, int(weights.get(k, next(e["weight"] for e in core.ENDPOINTS["PIS"] if e["key"] == k))))
+                     for k in core.ENDPOINTS_ORDER["PIS"] if k in pis_keys and k not in once]
+    c.pis_actions = [(k, w) for k, w in c.pis_actions if w > 0]
+    n = len(c.pis["to_submit"])
+    run_s = getattr(environment.parsed_options, "run_time", None) if environment.parsed_options else None
+    window = (run_s * 0.9) if run_s else 60.0       # spread over the run (or the first minute)
+    c.pis["interval"] = window / n if n else None
+    for ptype in c.pis_types:      # reads of payments that this run never submits
+        reads = [k for k in pis_keys if k.startswith(ptype + ":") and k.split(":")[1] in
+                 ("payment-get", "payment-details", "report-file")]
+        if reads and f"{ptype}:submit" not in pis_keys:
+            c.pis["notices_due"] = c.pis.get("notices_due", []) + [
+                f"PIS: {core.PAYMENT_TYPES[ptype]['short']} payment reads are ticked but payment submission isn't, so "
+                "there are no payments to read. Tick the submission (once per consent) or untick the reads."]
+    c.pis["next_due"] = time.time() + (c.pis["interval"] / 2 if n else 0)
     # CoF: authorised consents are reusable
     if c.flow["CoF"]:
         c.cof_entries = store["cof"]
@@ -301,13 +326,7 @@ class OpenBankingUser(HttpUser):
                     fn = (lambda key: (lambda u: u.ais_resource(key)))(e["key"])
                 tasks += [fn] * wt(e["key"], e["weight"])
         elif self.role == "PIS":
-            w = {e["key"]: wt(e["key"], e["weight"]) for e in core.ENDPOINTS["PIS"]}
-            if "consent-create" in eps:
-                tasks += [cls.pis_consent_create] * w["consent-create"]
-            if "consent-get" in eps:
-                tasks += [cls.pis_consent_get] * w["consent-get"]
-            if eps & {"funds-check", "payment-create", "payment-get"}:
-                tasks += [cls.pis_payment] * max(w["payment-create"], w["funds-check"], 1)
+            tasks = [cls.pis_tick]       # one-time submissions when due, otherwise a weighted repeatable call
         else:
             with _lock:
                 self.entry = next(cfg.cof_cycle)
@@ -325,12 +344,15 @@ class OpenBankingUser(HttpUser):
     def headers(token, extra=None):
         return {k: v for k, v in core.api_headers(cfg.t, token, extra).items() if v}
 
-    def call(self, method, path, token, name, body=None, expect=(200,), sign=False, renew=None):
-        """One request; `renew` gets a fresh token after a 401 (one retry)."""
+    def call(self, method, path, token, name, body=None, expect=(200,), sign=False, renew=None, raw=False,
+             file=None):
+        """One request; `renew` gets a fresh token after a 401 (one retry). raw: don't expect JSON back.
+        file: {"content": bytes, "type": content type} to send a payment file instead of JSON."""
         extra, data = {}, None
-        if body is not None:
-            data = json.dumps(body).encode()
-            extra = {"Content-Type": "application/json", "x-idempotency-key": uuid.uuid4().hex}
+        if body is not None or file is not None:
+            data = file["content"] if file is not None else json.dumps(body).encode()
+            extra = {"Content-Type": file["type"] if file is not None else "application/json",
+                     "x-idempotency-key": uuid.uuid4().hex}
             if sign and (sig := core.jws_signature(cfg.t, data)):
                 extra["x-jws-signature"] = sig
         for attempt in (1, 2):
@@ -352,6 +374,8 @@ class OpenBankingUser(HttpUser):
                     return None
                 elif not r.content:
                     return {}
+                elif raw:
+                    return {"_raw": len(r.content)}
                 else:
                     try:
                         return r.json()
@@ -367,7 +391,7 @@ class OpenBankingUser(HttpUser):
                     return None
                 token = new
 
-    def cc_call(self, area, method, path, name, body=None, expect=(200,), sign=False):
+    def cc_call(self, area, method, path, name, body=None, expect=(200,), sign=False, raw=False, file=None):
         """Call with a client-credentials token: pasted (manual) or fetched and renewed (consent flow)."""
         try:
             token = cfg.auth.client_credentials(core.SCOPE[area]) if cfg.flow[area] else cfg.manual_cc[area]
@@ -386,7 +410,7 @@ class OpenBankingUser(HttpUser):
                 return None
             cfg.auth._cc.pop(core.SCOPE[area], None)
             return cfg.auth.client_credentials(core.SCOPE[area])
-        return self.call(method, f"{cfg.paths[area]}{path}", token, name, body, expect, sign, renew)
+        return self.call(method, f"{cfg.paths[area]}{path}", token, name, body, expect, sign, renew, raw, file)
 
     def user_call(self, area, kind, method, path, name, body=None, expect=(200,), sign=False):
         if not self.entry:
@@ -440,39 +464,110 @@ class OpenBankingUser(HttpUser):
         self._consent_delete("AIS", "account-access-consents")
 
     # ------------------------------------------------------------------- PIS ----
-    def pis_consent_create(self):
-        self._consent_create("PIS", "domestic-payment-consents", core.payment_consent_body(cfg.t), sign=True)
+    def pis_notice(self, message):
+        """Tell the user once why PIS has nothing to do, instead of going quiet."""
+        if message in cfg.pis["notices"]:
+            return
+        cfg.pis["notices"].add(message)
+        self.environment.events.request.fire(request_type="CONFIG", name=message, response_time=0, response_length=0,
+                                             exception=Exception(message), context={})
+        log.warning(message)
 
-    def pis_consent_get(self):
-        self._consent_get("PIS", "domestic-payment-consents")
-
-    def pis_payment(self):
-        """Use one authorised consent: (funds check) -> submit -> (status), as ticked."""
+    def pis_tick(self):
+        P = cfg.pis
+        for message in P.pop("notices_due", []):
+            self.pis_notice(message)
+        item = None
         with _lock:
-            item = cfg.authorised.popleft() if cfg.authorised else None
-        if not item:  # prepared consents used up: keep the load going with consent calls
-            return self.pis_consent_create() if "consent-create" in cfg.eps["PIS"] else None
-        cid, eps = item["consent_id"], cfg.eps["PIS"]
-        if cfg.flow["PIS"]:
+            if P["to_submit"] and P["interval"] and time.time() >= P["next_due"]:
+                item = P["to_submit"].popleft()
+                P["next_due"] += P["interval"]
+        if item:
+            return self.pis_submit(item)
+        ready = [(k, w) for k, w in cfg.pis_actions if self.pis_can(k)]
+        if not ready:
+            if P["to_submit"]:
+                self.pis_notice("PIS: waiting for the next payment submission; none of the ticked repeatable calls can "
+                                "run before payments exist. Tick consent reads or funds checks to keep the load going.")
+            elif not cfg.pis_actions:
+                self.pis_notice(f"PIS: all {len(P['authorised'])} authorised payment consents have been submitted and no "
+                                "repeatable calls are ticked. Authorise more consents or tick repeatable calls.")
+            else:
+                self.pis_notice("PIS: none of the ticked calls can run: they need authorised consents or submitted "
+                                "payments. Authorise consents in the test profile (PIS tokens).")
+            gevent.sleep(0.5)
+            return None
+        key = random.choices([k for k, _ in ready], [w for _, w in ready])[0]
+        return self.pis_do(key)
+
+    def _pis_unused(self, ptype):
+        return [e for e in cfg.pis["authorised"] if e["ptype"] == ptype and e["consent_id"] not in cfg.pis["used"]]
+
+    def _pis_consents(self, ptype):
+        return ([e["consent_id"] for e in cfg.pis["authorised"] if e["ptype"] == ptype] +
+                [cid for t, cid in cfg.pis["created"] if t == ptype])
+
+    def pis_can(self, key):
+        ptype, what = key.split(":", 1)
+        if what == "consent-create":
+            return True
+        if what in ("consent-get", "file-get"):
+            return bool(self._pis_consents(ptype))
+        if what == "funds-check":
+            return bool(self._pis_unused(ptype))
+        if what in ("payment-get", "payment-details", "report-file"):
+            return any(t == ptype for t, _ in cfg.pis["payments"])
+        return False
+
+    def pis_do(self, key):
+        ptype, what = key.split(":", 1)
+        p = core.PAYMENT_TYPES[ptype]
+        if what == "consent-create":
+            body, file = core.payment_consent_body_for(cfg.t, ptype)
+            res = self.cc_call("PIS", "POST", f"/{p['consent']}", f"POST /{p['consent']}", body, expect=(201,), sign=True)
+            cid = (res or {}).get("Data", {}).get("ConsentId")
+            if cid and file:
+                self.cc_call("PIS", "POST", f"/{p['consent']}/{cid}/file", f"POST /{p['consent']}/[id]/file",
+                             expect=(200, 201, 204), sign=True, raw=True, file=file)
+            if cid:
+                cfg.pis["created"].append((ptype, cid))
+        elif what == "consent-get":
+            cid = random.choice(self._pis_consents(ptype))
+            self.cc_call("PIS", "GET", f"/{p['consent']}/{cid}", f"GET /{p['consent']}/[id]")
+        elif what == "file-get":
+            cid = random.choice(self._pis_consents(ptype))
+            self.cc_call("PIS", "GET", f"/{p['consent']}/{cid}/file", f"GET /{p['consent']}/[id]/file", raw=True)
+        elif what == "funds-check":
+            e = random.choice(self._pis_unused(ptype))
+            renew = (lambda: refresh_entry(e, e["access_token"], "pis")) if cfg.flow["PIS"] else None
+            self.call("GET", f"{cfg.paths['PIS']}/{p['consent']}/{e['consent_id']}/funds-confirmation", e["access_token"],
+                      f"GET /{p['consent']}/[id]/funds-confirmation", renew=renew)
+        else:
+            pid = random.choice([i for t, i in cfg.pis["payments"] if t == ptype])
+            suffix = {"payment-get": "", "payment-details": "/payment-details", "report-file": "/report-file"}[what]
+            self.cc_call("PIS", "GET", f"/{p['payment']}/{pid}{suffix}", f"GET /{p['payment']}/[id]{suffix}",
+                         raw=(what == "report-file"))
+
+    def pis_submit(self, item):
+        """Submit one authorised consent as its payment: the only call that uses the consent up."""
+        ptype, cid = item["ptype"], item["consent_id"]
+        p = core.PAYMENT_TYPES[ptype]
+        cfg.pis["used"].add(cid)
+        if cfg.flow["PIS"]:      # single use: never offered again, also not in later runs
             core.update_tokens(lambda s: core._tok(s, cfg.tid).__setitem__(
                 "pis", [e for e in core._tok(s, cfg.tid)["pis"] if e["consent_id"] != cid]))
             if item.get("expires_at", 1e18) - 10 < time.time():
                 refresh_entry(item, item["access_token"], "pis")
         renew = (lambda: refresh_entry(item, item["access_token"], "pis")) if cfg.flow["PIS"] else None
-        consent = self.cc_call("PIS", "GET", f"/domestic-payment-consents/{cid}", "GET /domestic-payment-consents/[id]")
-        if not consent:
-            return
-        if "funds-check" in eps:
-            self.call("GET", f"{cfg.paths['PIS']}/domestic-payment-consents/{cid}/funds-confirmation", item["access_token"],
-                      "GET /domestic-payment-consents/[id]/funds-confirmation", renew=renew)
-        if "payment-create" not in eps:
-            return
+        consent = self.cc_call("PIS", "GET", f"/{p['consent']}/{cid}", f"GET /{p['consent']}/[id]")
+        if not consent or "Initiation" not in consent.get("Data", {}):
+            return None
         body = {"Data": {"ConsentId": cid, "Initiation": consent["Data"]["Initiation"]}, "Risk": consent.get("Risk", {})}
-        res = self.call("POST", f"{cfg.paths['PIS']}/domestic-payments", item["access_token"], "POST /domestic-payments",
+        res = self.call("POST", f"{cfg.paths['PIS']}/{p['payment']}", item["access_token"], f"POST /{p['payment']}",
                         body, expect=(201,), sign=True, renew=renew)
-        pid = (res or {}).get("Data", {}).get("DomesticPaymentId")
-        if pid and "payment-get" in eps:
-            self.cc_call("PIS", "GET", f"/domestic-payments/{pid}", "GET /domestic-payments/[id]")
+        pid = (res or {}).get("Data", {}).get(p["id"])
+        if pid:
+            cfg.pis["payments"].append((ptype, pid))
 
     # ------------------------------------------------------------------- CoF ----
     def cof_consent_create(self):
@@ -510,7 +605,41 @@ EXEMPTION_CONFIG = os.getenv("OB_EXEMPTION_CONFIG", os.path.join(os.getcwd(), "e
 HAS_PDF = importlib.util.find_spec("playwright") is not None
 run = {"dir": None, "history": [], "sampler": None}
 # Per-second detail for the report: requests, errors by status code and per-endpoint timings (API calls only)
-timeline = {"secs": {}, "errors": {}}
+timeline = {"secs": {}, "errors": {}, "phases": {}, "rtt": []}
+
+# Connection setup (DNS + TCP, then TLS) is timed inside urllib3 and attributed to the request that opened it.
+_conn_log = {}   # greenlet -> [(started_epoch, tcp_ms, tls_ms), ...]
+
+
+def _patch_connection_timing():
+    try:
+        import urllib3.connection as uc
+    except ImportError:
+        return
+    if getattr(uc.HTTPSConnection, "_ob_timed", False) or not hasattr(uc.HTTPConnection, "_new_conn"):
+        return
+    orig_new, orig_connect = uc.HTTPConnection._new_conn, uc.HTTPSConnection.connect
+
+    def new_conn(self):
+        t = time.perf_counter()
+        try:
+            return orig_new(self)
+        finally:
+            self._ob_tcp_ms = (time.perf_counter() - t) * 1000
+
+    def connect(self):
+        started, t = time.time(), time.perf_counter()
+        self._ob_tcp_ms = None
+        result = orig_connect(self)
+        total = (time.perf_counter() - t) * 1000
+        tcp = self._ob_tcp_ms if self._ob_tcp_ms is not None else total
+        _conn_log.setdefault(gevent.getcurrent(), []).append((started, tcp, max(0.0, total - tcp)))
+        return result
+    uc.HTTPConnection._new_conn, uc.HTTPSConnection.connect = new_conn, connect
+    uc.HTTPSConnection._ob_timed = True
+
+
+_patch_connection_timing()
 
 
 def _error_message(exception):
@@ -522,6 +651,7 @@ def _error_message(exception):
 @events.request.add_listener
 def record_timeline(request_type, name, response_time, response_length, response=None, context=None,
                     exception=None, **_):
+    conns = _conn_log.pop(gevent.getcurrent(), [])
     if not run["dir"] or request_type in ("AUTH", "CONFIG") or name.endswith("(token expired)"):
         return
     sec = int(time.time())
@@ -530,6 +660,7 @@ def record_timeline(request_type, name, response_time, response_length, response
     ep = b["ep"].setdefault(name, [0, 0.0])
     ep[0] += 1
     ep[1] += float(response_time or 0)
+    _record_phases(name, response_time, response, exception, conns, _.get("start_time"))
     if exception is not None:
         code = int(getattr(response, "status_code", 0) or 0)
         key = str(code) if code else "no reply"
@@ -541,11 +672,65 @@ def record_timeline(request_type, name, response_time, response_length, response
         e["endpoints"][name] = e["endpoints"].get(name, 0) + 1
 
 
+def _record_phases(name, response_time, response, exception, conns, start_time):
+    """Split one response time: connection setup, waiting for the first byte, download."""
+    elapsed = getattr(response, "elapsed", None)
+    if response is None or elapsed is None or not getattr(response, "status_code", 0):
+        return   # no reply: nothing to split
+    mine = [c for c in conns if start_time is None or c[0] >= start_time - 0.05]
+    tcp = sum(c[1] for c in mine)
+    tls = sum(c[2] for c in mine)
+    to_headers = elapsed.total_seconds() * 1000          # connection setup + sending + waiting for the first byte
+    wait = max(0.0, to_headers - tcp - tls)
+    download = max(0.0, float(response_time or 0) - to_headers)
+    p = timeline["phases"].setdefault(name, {"n": 0, "conn_n": 0, "tcp_ms": 0.0, "tls_ms": 0.0, "wait_ms": 0.0,
+                                            "dl_ms": 0.0, "total_ms": 0.0})
+    p["n"] += 1
+    p["conn_n"] += len(mine)
+    p["tcp_ms"] += tcp
+    p["tls_ms"] += tls
+    p["wait_ms"] += wait
+    p["dl_ms"] += download
+    p["total_ms"] += float(response_time or 0)
+    b = timeline["secs"].get(int(time.time()))
+    if b is not None:
+        b["w"] = b.get("w", 0.0) + wait
+        b["wn"] = b.get("wn", 0) + 1
+
+
+def _probe_network(host_url, every=5):
+    """Network round trip to the resource server: time to open a TCP connection, every few seconds."""
+    import socket
+    from urllib.parse import urlsplit
+    u = urlsplit(host_url or "")
+    if not u.hostname:
+        return
+    port = u.port or (443 if u.scheme == "https" else 80)
+    try:
+        ip = socket.getaddrinfo(u.hostname, port, proto=socket.IPPROTO_TCP)[0][4][0]
+    except OSError:
+        return
+    while True:
+        t = time.perf_counter()
+        try:
+            s = socket.create_connection((ip, port), timeout=5)
+            ms = (time.perf_counter() - t) * 1000
+            s.close()
+        except OSError:
+            ms = None
+        timeline["rtt"].append([int(time.time()), None if ms is None else round(ms, 2)])
+        gevent.sleep(every)
+
+
 def _write_timeline(prefix):
-    secs = [[s, b["n"], b["codes"], {k: [v[0], round(v[1], 1)] for k, v in b["ep"].items()}]
+    secs = [[s, b["n"], b["codes"], {k: [v[0], round(v[1], 1)] for k, v in b["ep"].items()},
+             [b.get("wn", 0), round(b.get("w", 0.0), 1)]]
             for s, b in sorted(timeline["secs"].items())]
+    phases = {k: {f: (round(v, 1) if isinstance(v, float) else v) for f, v in p.items()}
+              for k, p in timeline["phases"].items()}
     with open(f"{prefix}_timeline.json", "w") as fh:
-        json.dump({"version": 1, "secs": secs, "errors": timeline["errors"]}, fh, separators=(",", ":"))
+        json.dump({"version": 2, "secs": secs, "errors": timeline["errors"], "phases": phases,
+                   "rtt": timeline["rtt"]}, fh, separators=(",", ":"))
 
 
 def _is_worker(environment):
@@ -638,7 +823,11 @@ def start_run_record(environment, **_):
         return
     run["dir"] = os.path.join(RESULTS, datetime.now().strftime("%Y-%m-%d_%H%M%S"))
     run["history"] = []
-    timeline["secs"], timeline["errors"] = {}, {}
+    timeline["secs"], timeline["errors"], timeline["phases"], timeline["rtt"] = {}, {}, {}, []
+    _conn_log.clear()
+    if run.get("probe"):
+        run["probe"].kill(block=False)
+    run["probe"] = gevent.spawn(_probe_network, cfg.host if cfg.ready else environment.host)
     if cfg.ready:
         try:
             os.makedirs(run["dir"], exist_ok=True)
@@ -658,6 +847,9 @@ def finish_run_record(environment, **_):
     if run["sampler"]:
         run["sampler"].kill(block=False)
         run["sampler"] = None
+    if run.get("probe"):
+        run["probe"].kill(block=False)
+        run["probe"] = None
     path, error = _build(environment, "report")
     if cfg.ready:
         core.record_run(os.path.basename(run["dir"]), {

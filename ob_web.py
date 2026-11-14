@@ -148,7 +148,8 @@ def register(app, environment):
     @app.route("/ob-profiles/api/meta")
     def ob_profiles_meta():
         return ok(schema=core.PROFILE_SCHEMA, steps=core.PROFILE_STEPS, endpoints=core.ENDPOINTS, areas=core.AREAS,
-                  tenants=core.list_tenants(), callback=request.host_url.rstrip("/") + "/ob-callback")
+                  tenants=core.list_tenants(), callback=request.host_url.rstrip("/") + "/ob-callback",
+                  templates=core.standard_templates(), payment_types=core.PAYMENT_TYPES)
 
     def _profile_body():
         body = request.get_json(force=True) or {}
@@ -177,7 +178,7 @@ def register(app, environment):
     def ob_profile_consents(pid):
         body = request.get_json(force=True) or {}
         try:
-            created = core.create_consents(pid, body.get("area", "AIS"), body.get("count", 1))
+            created = core.create_consents(pid, body.get("area", "AIS"), body.get("count", 1), body.get("ptype"))
         except Exception as e:  # noqa: BLE001
             return fail(e)
         return ok(created=created, tokens=core.token_overview(pid))

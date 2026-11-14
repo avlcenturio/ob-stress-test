@@ -4,7 +4,7 @@
 #   3. docker compose -f docker-compose.yml -f docker-compose.server.yml up -d --build
 #   Open https://<server>:8089 ; register https://<server>:8089/ob-callback as a redirect URL for automatic capture.
 services:
-  stress-test:
+  ob-stress-test:
     volumes:
       - ob-data:/data
       - ./tls:/tls:ro

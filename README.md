@@ -140,6 +140,29 @@ profile and holds everything that changes from test to test.
 Tokens are renewed with the refresh token when they expire, also during a run. Each authorised
 payment consent is used for exactly one payment.
 
+### Payments (PIS)
+
+All UK Open Banking payment types except VRP: domestic, domestic scheduled, domestic standing
+orders, international, international scheduled, international standing orders and file payments.
+
+- **Submitting a payment happens exactly once per authorised consent** (that's how payment consents
+  work), so it has no weight: submissions are spread evenly over the run time (over the first minute
+  if no run time is set).
+- **Everything else is repeatable and shares the remaining requests per second by weight:** creating
+  consents, reading consents and payment files, funds checks (until the consent's payment is
+  submitted), reading payments and standing orders, payment details and report files.
+- Calls that can't run yet (e.g. reading payments before the first submission) give their share to
+  the others; if nothing can run, the test records a notice explaining why instead of going quiet.
+- **Consents:** in *PIS tokens*, choose the payment type next to *Create*. Pasted consents use lines of
+  `ConsentId,AccessToken,type` (type optional, domestic by default).
+- **Request templates:** each payment type has an editable JSON template for its consent request,
+  pre-filled for UK OB v3.1 or v4.0, with placeholders such as `{{Amount}}`, `{{CreditorId}}`,
+  `{{ExecutionDateTime}}`, `{{Frequency}}` and `{{IntlCurrency}}`. Edit one only if your financial
+  institution needs something different (e.g. its supported standing order frequency codes).
+- **File payments:** Open Banking JSON (`UK.OBIE.PaymentInitiation.3.1`) or ISO 20022 pain.001
+  (`UK.OBIE.pain.001.001.08`); the file is generated and uploaded when the consent is created, with
+  its hash, number of transactions and control sum calculated automatically.
+
 ### Run history
 
 Each profile card shows its latest run. **Runs** lists every run of the profile, newest first, with
@@ -186,9 +209,24 @@ The report contains:
 - **Benchmarks:** throughput and users, performance, error rate, availability
 - *What we found*: only when the run fails, naming what failed and where
 - **1. Throughput and users:** requests per second and users, with the throughput target line
-- **2. Performance:** average response time per endpoint over time, average per endpoint, percentiles (for engineers)
+- **2. Performance:** average response time per endpoint over time, average per endpoint, where the time goes (connection setup, network, server, download), network latency over time, percentiles (for engineers)
 - **3. Error rate:** 5xx errors against the benchmark, all other errors by type, and the errors-by-type table
 - **4. Endpoints summary:** requests, average, p95, 5xx and 4xx per endpoint
+
+### How response times are measured
+
+Each response time runs from sending the request until the last byte of the response arrives, as seen
+from the machine running the test. The report splits it per request:
+
+| Part | Measured how |
+|---|---|
+| **Connection setup** | DNS, TCP and TLS (mTLS) handshake, timed whenever a new connection is opened; reused connections skip it |
+| **Network round trip** | A TCP connect to the resource server every 5 seconds during the run |
+| **Server processing (estimated)** | Time until the first byte of the response, minus the network round trip |
+| **Download** | From the first byte until the last byte of the response body |
+
+The financial institution's exact internal time can only come from its side (some APIs return a
+`Server-Timing` header; each request also carries an `x-fapi-interaction-id` it can look up).
 
 ### Open Banking benchmarks
 

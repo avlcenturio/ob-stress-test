@@ -33,8 +33,64 @@ _lock = threading.RLock()
 
 # ---------------------------------------------------------------- endpoints ----
 # key, method, path, group, description, weight, ticked by default, needs (key it depends on)
-E = lambda key, method, path, group, desc="", weight=1, on=True, needs=None: dict(
-    key=key, method=method, path=path, group=group, desc=desc, weight=weight, on=on, needs=needs)
+E = lambda key, method, path, group, desc="", weight=1, on=True, needs=None, once=False: dict(
+    key=key, method=method, path=path, group=group, desc=desc, weight=weight, on=on, needs=needs, once=once)
+
+# UK Open Banking payment types (VRP not included). Keys in the PIS catalogue are "<type>:<call>".
+PAYMENT_TYPES = {
+    "domestic": {"label": "Domestic payments", "short": "Domestic", "consent": "domestic-payment-consents",
+                 "payment": "domestic-payments", "id": "DomesticPaymentId", "funds": True},
+    "domestic-scheduled": {"label": "Domestic scheduled payments", "short": "Domestic scheduled",
+                           "consent": "domestic-scheduled-payment-consents", "payment": "domestic-scheduled-payments",
+                           "id": "DomesticScheduledPaymentId", "funds": False},
+    "domestic-standing-order": {"label": "Domestic standing orders", "short": "Domestic standing order",
+                                "consent": "domestic-standing-order-consents", "payment": "domestic-standing-orders",
+                                "id": "DomesticStandingOrderId", "funds": False},
+    "international": {"label": "International payments", "short": "International",
+                      "consent": "international-payment-consents", "payment": "international-payments",
+                      "id": "InternationalPaymentId", "funds": True},
+    "international-scheduled": {"label": "International scheduled payments", "short": "International scheduled",
+                                "consent": "international-scheduled-payment-consents",
+                                "payment": "international-scheduled-payments",
+                                "id": "InternationalScheduledPaymentId", "funds": True},
+    "international-standing-order": {"label": "International standing orders",
+                                     "short": "International standing order",
+                                     "consent": "international-standing-order-consents",
+                                     "payment": "international-standing-orders",
+                                     "id": "InternationalStandingOrderPaymentId", "funds": False},
+    "file": {"label": "File payments", "short": "File", "consent": "file-payment-consents",
+             "payment": "file-payments", "id": "FilePaymentId", "funds": False, "file": True},
+}
+PIS_LEGACY = {"consent-create": "domestic:consent-create", "consent-get": "domestic:consent-get",
+              "funds-check": "domestic:funds-check", "payment-create": "domestic:submit",
+              "payment-get": "domestic:payment-get"}
+
+
+def _pis_catalogue():
+    out = []
+    for t, p in PAYMENT_TYPES.items():
+        g, on = p["label"], t == "domestic"
+        out.append(E(f"{t}:consent-create", "POST", f"/{p['consent']}", g, "Create a consent (not authorised)", 1, on))
+        out.append(E(f"{t}:consent-get", "GET", f"/{p['consent']}/{{ConsentId}}", g, "Read a consent", 3, on))
+        if p["funds"]:
+            out.append(E(f"{t}:funds-check", "GET", f"/{p['consent']}/{{ConsentId}}/funds-confirmation", g,
+                         "Funds check, until the consent is used for its payment", 2, on))
+        if p.get("file"):
+            out.append(E(f"{t}:file-get", "GET", f"/{p['consent']}/{{ConsentId}}/file", g, "Read the uploaded file", 1, on))
+        out.append(E(f"{t}:submit", "POST", f"/{p['payment']}", g, "Submit the payment: once per authorised consent",
+                     0, on, once=True))
+        out.append(E(f"{t}:payment-get", "GET", f"/{p['payment']}/{{{p['id']}}}", g, "Read a submitted payment", 3, on))
+        out.append(E(f"{t}:payment-details", "GET", f"/{p['payment']}/{{{p['id']}}}/payment-details", g,
+                     "Payment details", 1, on))
+        if p.get("file"):
+            out.append(E(f"{t}:report-file", "GET", f"/{p['payment']}/{{{p['id']}}}/report-file", g, "Report file", 1, on))
+    return out
+
+
+def migrate_pis_keys(csv):
+    """Endpoint lists saved before payment types existed used plain keys for domestic payments."""
+    keys = [PIS_LEGACY.get(k, k) for k in (csv or "").split(",") if k]
+    return ",".join(dict.fromkeys(keys))
 
 ENDPOINTS = {
     "AIS": [
@@ -52,17 +108,7 @@ ENDPOINTS = {
         E("consent-delete", "DELETE", "/account-access-consents/{ConsentId}", "Consents (client credentials)",
           "Delete a consent created above", 1, False, "consent-create"),
     ],
-    "PIS": [
-        E("consent-create", "POST", "/domestic-payment-consents", "Payment consents (client credentials)", "Create a consent", 3),
-        E("consent-get", "GET", "/domestic-payment-consents/{ConsentId}", "Payment consents (client credentials)",
-          "Read back a consent created above", 3, True, "consent-create"),
-        E("funds-check", "GET", "/domestic-payment-consents/{ConsentId}/funds-confirmation",
-          "Payments (authorised consents, one payment each)", "Check funds before paying", 1),
-        E("payment-create", "POST", "/domestic-payments", "Payments (authorised consents, one payment each)",
-          "Submit the payment", 1),
-        E("payment-get", "GET", "/domestic-payments/{DomesticPaymentId}", "Payments (authorised consents, one payment each)",
-          "Payment status", 1, True, "payment-create"),
-    ],
+    "PIS": _pis_catalogue(),
     "CoF": [
         E("consent-create", "POST", "/funds-confirmation-consents", "CoF consents (client credentials)", "Create a consent", 1),
         E("consent-get", "GET", "/funds-confirmation-consents/{ConsentId}", "CoF consents (client credentials)",
@@ -73,6 +119,7 @@ ENDPOINTS = {
     ],
 }
 API_SEGMENT = {"AIS": "aisp", "PIS": "pisp", "CoF": "cbpii"}
+ENDPOINTS_ORDER = {a: [e["key"] for e in ENDPOINTS[a]] for a in ENDPOINTS}
 SCOPE = {"AIS": "accounts", "PIS": "payments", "CoF": "fundsconfirmations"}
 KIND = {"ais": "AIS", "pis": "PIS", "cof": "CoF"}
 DEFAULT_PERMISSIONS = ("ReadAccountsDetail, ReadBalances, ReadBeneficiariesDetail, ReadDirectDebits, ReadOffers, "
@@ -253,6 +300,7 @@ def get_tenant(tid):
         raise KeyError(f"Unknown tenant: {tid}")
     t = {**new_tenant_values(), **t}
     t["ca_check"] = ca_mode(t.get("ca_check"))
+    t["pis_endpoints"] = migrate_pis_keys(t.get("pis_endpoints"))
     return t
 
 
@@ -707,6 +755,122 @@ def jws_signature(t, body: bytes):
     return f"{head}..{sig}"
 
 
+# Data templates per payment type and version: the "Data" object of the consent request, with placeholders.
+# Editable per test profile (test data), because financial institutions differ in the details they accept.
+_REM3 = '{"Reference": "{{Reference}}", "Unstructured": "Locust stress test"}'
+_REM4 = '{"Structured": [{"CreditorReferenceInformation": {"Reference": "{{Reference}}"}}], "Unstructured": ["Locust stress test"]}'
+_CRED = '{"SchemeName": "{{CreditorScheme}}", "Identification": "{{CreditorId}}", "Name": "{{CreditorName}}"}'
+_ICRED = '{"SchemeName": "{{IntlCreditorScheme}}", "Identification": "{{IntlCreditorId}}", "Name": "{{IntlCreditorName}}"}'
+_IDS = '"InstructionIdentification": "{{InstructionIdentification}}", "EndToEndIdentification": "{{EndToEndIdentification}}"'
+
+
+def _tpl(v4, kind):
+    rem = _REM4 if v4 else _REM3
+    amt = '{"Amount": "{{Amount}}", "Currency": "{{Currency}}"}'
+    iamt = '{"Amount": "{{Amount}}", "Currency": "{{IntlCurrency}}"}'
+    freq = ('"MandateRelatedInformation": {"Frequency": {"Type": "{{Frequency}}", "CountPerPeriod": 1, "PointInTime": "01"}}'
+            if v4 else '"Frequency": "{{Frequency}}", "Reference": "{{Reference}}", "NumberOfPayments": "1"')
+    rem_so = f', "RemittanceInformation": {rem}' if v4 else ""
+    t = {
+        "domestic": f'{{"Initiation": {{{_IDS}, "InstructedAmount": {amt}, "CreditorAccount": {_CRED}, '
+                    f'"RemittanceInformation": {rem}}}}}',
+        "domestic-scheduled": f'{{"Permission": "Create", "Initiation": {{{_IDS}, "RequestedExecutionDateTime": '
+                              f'"{{{{ExecutionDateTime}}}}", "InstructedAmount": {amt}, "CreditorAccount": {_CRED}, '
+                              f'"RemittanceInformation": {rem}}}}}',
+        "domestic-standing-order": f'{{"Permission": "Create", "Initiation": {{{freq}, "FirstPaymentDateTime": '
+                                   f'"{{{{FirstPaymentDateTime}}}}", "FirstPaymentAmount": {amt}, '
+                                   f'"CreditorAccount": {_CRED}{rem_so}}}}}',
+        "international": f'{{"Initiation": {{{_IDS}, "CurrencyOfTransfer": "{{{{IntlCurrency}}}}", '
+                         f'"InstructedAmount": {iamt}, "CreditorAccount": {_ICRED}, "RemittanceInformation": {rem}}}}}',
+        "international-scheduled": f'{{"Permission": "Create", "Initiation": {{{_IDS}, "RequestedExecutionDateTime": '
+                                   f'"{{{{ExecutionDateTime}}}}", "CurrencyOfTransfer": "{{{{IntlCurrency}}}}", '
+                                   f'"InstructedAmount": {iamt}, "CreditorAccount": {_ICRED}, '
+                                   f'"RemittanceInformation": {rem}}}}}',
+        "international-standing-order": f'{{"Permission": "Create", "Initiation": {{{freq}, "FirstPaymentDateTime": '
+                                        f'"{{{{FirstPaymentDateTime}}}}", "CurrencyOfTransfer": "{{{{IntlCurrency}}}}", '
+                                        f'"InstructedAmount": {iamt}, "CreditorAccount": {_ICRED}{rem_so}}}}}',
+        "file": '{"Initiation": {"FileType": "{{FileType}}", "FileHash": "{{FileHash}}", '
+                '"NumberOfTransactions": "{{NumberOfTransactions}}", "ControlSum": "{{ControlSum}}"}}',
+    }
+    return json.dumps(json.loads(t[kind]), indent=2)
+
+
+def standard_templates():
+    return {k: {"3.1": _tpl(False, k), "4.0": _tpl(True, k)} for k in PAYMENT_TYPES}
+
+
+def _fill(template, values):
+    out = template
+    for k, v in values.items():
+        token = "{{" + k + "}}"
+        if k in ("ControlSum",):        # a number in the request: the quoted placeholder becomes a bare number
+            out = out.replace(f'"{token}"', str(v))
+        out = out.replace(token, json.dumps(str(v))[1:-1])
+    return out
+
+
+def payment_file(t):
+    """A payment file with a few domestic payments, its content type and its totals."""
+    n = max(1, min(int(float(t.get("file_transactions") or 3)), 500))
+    amount = float(t.get("amount") or "1.00")
+    sid = lambda p: f"{p}{uuid.uuid4().hex[:30]}"[:35]
+    ftype = t.get("file_type") or "UK.OBIE.PaymentInitiation.3.1"
+    if "pain.001" in ftype:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        txs = "".join(
+            f"<CdtTrfTxInf><PmtId><InstrId>{sid('LT')}</InstrId><EndToEndId>{sid('E2E')}</EndToEndId></PmtId>"
+            f"<Amt><InstdAmt Ccy=\"{t.get('currency') or 'GBP'}\">{amount:.2f}</InstdAmt></Amt>"
+            f"<Cdtr><Nm>{t.get('creditor_name')}</Nm></Cdtr><CdtrAcct><Id><Othr><Id>{t.get('creditor_id')}</Id></Othr>"
+            f"</Id></CdtrAcct></CdtTrfTxInf>" for _ in range(n))
+        body = (f'<?xml version="1.0" encoding="UTF-8"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.08">'
+                f"<CstmrCdtTrfInitn><GrpHdr><MsgId>{sid('MSG')}</MsgId><CreDtTm>{now}</CreDtTm><NbOfTxs>{n}</NbOfTxs>"
+                f"<CtrlSum>{amount * n:.2f}</CtrlSum><InitgPty><Nm>Load test</Nm></InitgPty></GrpHdr>"
+                f"<PmtInf><PmtInfId>{sid('PMT')}</PmtInfId><PmtMtd>TRF</PmtMtd>{txs}</PmtInf></CstmrCdtTrfInitn></Document>")
+        content, ctype = body.encode(), "text/xml"
+    else:
+        rem = (json.loads(_REM4.replace("{{Reference}}", "LOADTEST")) if t.get("version") == "4.0"
+               else json.loads(_REM3.replace("{{Reference}}", "LOADTEST")))
+        payments = [{"InstructionIdentification": sid("LT"), "EndToEndIdentification": sid("E2E"),
+                     "InstructedAmount": {"Amount": f"{amount:.2f}", "Currency": t.get("currency") or "GBP"},
+                     "CreditorAccount": {"SchemeName": t.get("creditor_scheme"), "Identification": t.get("creditor_id"),
+                                         "Name": t.get("creditor_name")},
+                     "RemittanceInformation": rem} for _ in range(n)]
+        content, ctype = json.dumps({"Data": {"DomesticPayments": payments}}).encode(), "application/json"
+    import base64
+    import hashlib
+    return {"content": content, "type": ctype, "file_type": ftype, "count": n, "control_sum": round(amount * n, 2),
+            "hash": base64.b64encode(hashlib.sha256(content).digest()).decode()}
+
+
+def payment_consent_body_for(t, ptype):
+    """Consent request for a payment type, from the profile's template (or the standard one)."""
+    if ptype == "domestic" and not (t.get("tpl_domestic") or "").strip():
+        return payment_consent_body(t), None
+    v4 = t.get("version") == "4.0"
+    template = (t.get("tpl_" + ptype.replace("-", "_")) or "").strip() or _tpl(v4, ptype)
+    sid = lambda p: f"{p}{uuid.uuid4().hex[:30]}"[:35]
+    when = (datetime.now(timezone.utc) + timedelta(days=int(float(t.get("exec_days") or 2)))).replace(
+        hour=9, minute=0, second=0, microsecond=0).isoformat(timespec="seconds")
+    values = {"InstructionIdentification": sid("LT"), "EndToEndIdentification": sid("E2E"),
+              "Amount": t.get("amount") or "1.00", "Currency": t.get("currency") or "GBP",
+              "CreditorScheme": t.get("creditor_scheme"), "CreditorId": t.get("creditor_id"),
+              "CreditorName": t.get("creditor_name"), "Reference": "LOADTEST",
+              "ExecutionDateTime": when, "FirstPaymentDateTime": when,
+              "Frequency": (t.get("so_frequency") or "").strip() or ("MNTH" if v4 else "EvryWorkgDay"),
+              "IntlCurrency": t.get("intl_currency") or "EUR", "IntlCreditorScheme": t.get("intl_creditor_scheme"),
+              "IntlCreditorId": t.get("intl_creditor_id"), "IntlCreditorName": t.get("intl_creditor_name")}
+    f = None
+    if PAYMENT_TYPES[ptype].get("file"):
+        f = payment_file(t)
+        values.update(FileType=f["file_type"], FileHash=f["hash"], NumberOfTransactions=str(f["count"]),
+                      ControlSum=f["control_sum"])
+    try:
+        data = json.loads(_fill(template, values))
+    except ValueError as e:
+        raise FlowError(f"The {PAYMENT_TYPES[ptype]['short']} template isn't valid JSON after filling in: {e}")
+    return {"Data": data, "Risk": json.loads(t.get("risk") or "{}")}, f
+
+
 CONSENT_RESOURCE = {"AIS": ("account-access-consents", account_consent_body, False),
                     "PIS": ("domestic-payment-consents", payment_consent_body, True),
                     "CoF": ("funds-confirmation-consents", cof_consent_body, False)}
@@ -791,15 +955,59 @@ PROFILE_SCHEMA = [
     F("pisp_cc_token", "PIS", "secret", "Client-credentials token", os.getenv("OB_PISP_CC_TOKEN", ""),
       "Creates and reads payment consents.", show={"pis_source": MANUAL}),
     F("pisp_authorised", "PIS", "textarea", "Authorised payment consents", "",
-      "Lines of ConsentId,AccessToken. Each is submitted once as a payment.", show={"pis_source": MANUAL}),
-    F("amount", "PIS", "text", "Amount", os.getenv("OB_PAYMENT_AMOUNT", "1.00"), testdata=True, data_for=['consent-create']),
-    F("currency", "PIS", "text", "Currency", os.getenv("OB_PAYMENT_CURRENCY", "GBP"), testdata=True, data_for=['consent-create']),
-    F("creditor_name", "PIS", "text", "Payee name", os.getenv("OB_CREDITOR_NAME", "Load Test Payee"), testdata=True, data_for=['consent-create']),
-    F("creditor_id", "PIS", "text", "Payee account", os.getenv("OB_CREDITOR_ID", "08080021325698"), testdata=True, data_for=['consent-create']),
-    F("creditor_scheme", "PIS", "text", "Payee account scheme", os.getenv("OB_CREDITOR_SCHEME", "UK.OBIE.SortCodeAccountNumber"), testdata=True, data_for=['consent-create']),
-    F("risk", "PIS", "textarea", "Risk block (JSON)", os.getenv("OB_PAYMENT_RISK", "{}"), 'e.g. {"PaymentContextCode":"PartyToParty"}', testdata=True, data_for=['consent-create']),
+      "Lines of ConsentId,AccessToken,type. Type is optional (domestic if left out): domestic, domestic-scheduled, "
+      "domestic-standing-order, international, international-scheduled, international-standing-order or file. "
+      "Each consent is submitted once as a payment.", show={"pis_source": MANUAL}),
+    F("amount", "PIS", "text", "Amount", os.getenv("OB_PAYMENT_AMOUNT", "1.00"), testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("currency", "PIS", "text", "Currency", os.getenv("OB_PAYMENT_CURRENCY", "GBP"), testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("creditor_name", "PIS", "text", "Payee name", os.getenv("OB_CREDITOR_NAME", "Load Test Payee"), testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("creditor_id", "PIS", "text", "Payee account", os.getenv("OB_CREDITOR_ID", "08080021325698"), testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("creditor_scheme", "PIS", "text", "Payee account scheme", os.getenv("OB_CREDITOR_SCHEME", "UK.OBIE.SortCodeAccountNumber"), testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("risk", "PIS", "textarea", "Risk block (JSON)", os.getenv("OB_PAYMENT_RISK", "{}"), 'e.g. {"PaymentContextCode":"PartyToParty"}', testdata=True, data_for=["*:consent-create", "*:submit"]),
+    F("exec_days", "PIS", "number", "Execution date: days from today", "2",
+      "For scheduled payments and the first payment of standing orders.", testdata=True,
+      data_for=["domestic-scheduled:*", "international-scheduled:*", "domestic-standing-order:*",
+                "international-standing-order:*"]),
+    F("so_frequency", "PIS", "text", "Standing order frequency", "",
+      "Empty = standard (v3.1: EvryWorkgDay, v4.0: MNTH). Use a value your financial institution supports.",
+      testdata=True, data_for=["domestic-standing-order:*", "international-standing-order:*"]),
+    F("intl_currency", "PIS", "text", "International: currency of transfer", "EUR", testdata=True,
+      data_for=["international:*", "international-scheduled:*", "international-standing-order:*"]),
+    F("intl_creditor_name", "PIS", "text", "International: payee name", "Load Test Payee EU", testdata=True,
+      data_for=["international:*", "international-scheduled:*", "international-standing-order:*"]),
+    F("intl_creditor_id", "PIS", "text", "International: payee account", "DE89370400440532013000", testdata=True,
+      data_for=["international:*", "international-scheduled:*", "international-standing-order:*"]),
+    F("intl_creditor_scheme", "PIS", "text", "International: payee account scheme", "UK.OBIE.IBAN", testdata=True,
+      data_for=["international:*", "international-scheduled:*", "international-standing-order:*"]),
+    F("file_type", "PIS", "choice", "File payments: file type", "UK.OBIE.PaymentInitiation.3.1",
+      "The format your financial institution accepts.", choices=["UK.OBIE.PaymentInitiation.3.1",
+                                                                 "UK.OBIE.pain.001.001.08"],
+      testdata=True, data_for=["file:*"]),
+    F("file_transactions", "PIS", "number", "File payments: payments per file", "3", testdata=True,
+      data_for=["file:*"]),
+    F("tpl_domestic", "PIS", "template", "Domestic: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["domestic:*"], wide=True),
+    F("tpl_domestic_scheduled", "PIS", "template", "Domestic scheduled: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["domestic-scheduled:*"], wide=True),
+    F("tpl_domestic_standing_order", "PIS", "template", "Domestic standing order: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["domestic-standing-order:*"], wide=True),
+    F("tpl_international", "PIS", "template", "International: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["international:*"], wide=True),
+    F("tpl_international_scheduled", "PIS", "template", "International scheduled: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["international-scheduled:*"], wide=True),
+    F("tpl_international_standing_order", "PIS", "template", "International standing order: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["international-standing-order:*"], wide=True),
+    F("tpl_file", "PIS", "template", "File: request template (JSON)", "",
+      "Empty = the standard template for your UK Open Banking version. Edit only if your financial institution "
+      "needs something different.", testdata=True, data_for=["file:*"], wide=True),
     F("sign_payments", "PIS", "choice", "Sign payment requests (x-jws-signature)", "No",
-      "Uses the tenant's signing key.", choices=["No", "Yes"], testdata=True, data_for=["consent-create", "payment-create"]),
+      "Uses the tenant's signing key.", choices=["No", "Yes"], testdata=True, data_for=["*:consent-create", "*:submit"]),
 
     F("cof_tests", "CoF", "tests", "APIs to call", "", area_tests="CoF"),
     F("cof_source", "CoF", "source", "Token source", MANUAL, choices=SOURCES),
@@ -900,7 +1108,10 @@ def get_profile(pid):
     if p is None:
         raise KeyError(f"Unknown test profile: {pid}")
     v = {**new_profile_values(), **p}
-    v["weights"] = {a: {**default_weights(a), **(p.get("weights") or {}).get(a, {})} for a in AREAS}
+    saved = {a: dict((p.get("weights") or {}).get(a, {})) for a in AREAS}
+    saved["PIS"] = {PIS_LEGACY.get(k, k): w for k, w in saved["PIS"].items()}
+    v["weights"] = {a: {**default_weights(a), **saved[a]} for a in AREAS}
+    v["pis_tests"] = migrate_pis_keys(v.get("pis_tests"))
     return v
 
 
@@ -1055,8 +1266,9 @@ def tenant_tokens(pid):  # kept name: tokens now belong to a test profile
     return {"ais": t.get("ais", []), "pis": t.get("pis", []), "cof": t.get("cof", []), "pending": t.get("pending", {})}
 
 
-def create_consents(pid, area, count):
-    """Create consents with a client-credentials token and return their authorisation links."""
+def create_consents(pid, area, count, ptype=None):
+    """Create consents with a client-credentials token and return their authorisation links.
+    For PIS, ptype is the payment type; file payments also get their payment file uploaded."""
     run = get_run(pid)
     host = (run.get("rs_host") or "").rstrip("/")
     if not host:
@@ -1064,21 +1276,39 @@ def create_consents(pid, area, count):
     auth = AuthClient(run)
     cc = auth.client_credentials(SCOPE[area])
     resource, body_fn, sign = CONSENT_RESOURCE[area]
+    if area == "PIS":
+        ptype = ptype if ptype in PAYMENT_TYPES else "domestic"
+        resource = PAYMENT_TYPES[ptype]["consent"]
     created = []
     for _ in range(max(1, min(int(count), 200))):
-        data = json.dumps(body_fn(run)).encode()
+        file = None
+        if area == "PIS":
+            body, file = payment_consent_body_for(run, ptype)
+        else:
+            body = body_fn(run)
+        data = json.dumps(body).encode()
         extra = {"Content-Type": "application/json", "x-idempotency-key": uuid.uuid4().hex}
         if sign and (sig := jws_signature(run, data)):
             extra["x-jws-signature"] = sig
-        r = requests.post(f"{host}{api_path(run, area)}/{resource}", data=data, headers=api_headers(run, cc, extra),
-                          cert=auth.cert, verify=auth.verify, timeout=30)
+        base = f"{host}{api_path(run, area)}/{resource}"
+        r = requests.post(base, data=data, headers=api_headers(run, cc, extra), cert=auth.cert, verify=auth.verify,
+                          timeout=30)
         if r.status_code != 201:
             raise FlowError(f"Creating the consent failed ({r.status_code}): {r.text[:300]}")
         consent_id = r.json()["Data"]["ConsentId"]
+        if file:   # file payments: upload the payment file before the PSU authorises
+            fx = {"Content-Type": file["type"], "x-idempotency-key": uuid.uuid4().hex}
+            if (sig := jws_signature(run, file["content"])):
+                fx["x-jws-signature"] = sig
+            fr = requests.post(f"{base}/{consent_id}/file", data=file["content"], headers=api_headers(run, cc, fx),
+                               cert=auth.cert, verify=auth.verify, timeout=60)
+            if fr.status_code not in (200, 201, 204):
+                raise FlowError(f"Uploading the payment file failed ({fr.status_code}): {fr.text[:300]}")
         link, state, nonce = auth.authorise_url(consent_id, area)
         update_tokens(lambda s: _tok(s, pid)["pending"].__setitem__(state, {
-            "area": area, "consent_id": consent_id, "nonce": nonce, "created": time.time(), "url": link}))
-        created.append({"consent_id": consent_id, "state": state, "url": link})
+            "area": area, "consent_id": consent_id, "nonce": nonce, "created": time.time(), "url": link,
+            **({"ptype": ptype} if area == "PIS" else {})}))
+        created.append({"consent_id": consent_id, "state": state, "url": link, **({"ptype": ptype} if ptype else {})})
     return created
 
 
@@ -1112,6 +1342,7 @@ def complete_authorisation(redirected_url, state_hint=None):
     pid, p = match[0]
     tok = AuthClient(get_run(pid)).exchange_code(code)
     entry = {"consent_id": p["consent_id"], "access_token": tok["access_token"],
+             **({"ptype": p["ptype"]} if p.get("ptype") else {}),
              "refresh_token": tok.get("refresh_token", ""), "expires_at": tok["expires_at"], "created": time.time()}
     area = p.get("area") or KIND.get(p.get("kind", "ais"), "AIS")
 
@@ -1127,10 +1358,11 @@ def complete_authorisation(redirected_url, state_hint=None):
 def token_overview(pid):
     t, now = tenant_tokens(pid), time.time()
     view = lambda e: {"consent_id": e["consent_id"], "expires_in": int(e.get("expires_at", 0) - now),
-                      "refresh": bool(e.get("refresh_token"))}
+                      "refresh": bool(e.get("refresh_token")), "ptype": e.get("ptype", "domestic")}
     return {"AIS": [view(e) for e in t["ais"]], "PIS": [view(e) for e in t["pis"]], "CoF": [view(e) for e in t["cof"]],
             "pending": [{"state": k, "area": v.get("area") or KIND.get(v.get("kind", "ais"), "AIS"),
-                         "consent_id": v["consent_id"], "url": v["url"]} for k, v in t["pending"].items()]}
+                         "consent_id": v["consent_id"], "url": v["url"], "ptype": v.get("ptype", "")}
+                        for k, v in t["pending"].items()]}
 
 
 def remove_tokens(pid, area, consent_id=None):
