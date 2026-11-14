@@ -113,6 +113,10 @@ header.MuiAppBar-root .MuiButton-root.MuiButton-colorError{{background:{b['bad']
 header.MuiAppBar-root .MuiButton-root.MuiButton-colorError:hover{{filter:brightness(1.08)}}
 header.MuiAppBar-root .MuiBox-root:has(> .MuiBox-root > .MuiButton-root):not(:has(.MuiTypography-root)){{gap:8px!important}}
 #ob-nav{{display:flex;gap:8px;align-items:center;flex:none;margin:0 auto 0 4px}}
+#ob-summary{{border:1px solid rgba(128,128,128,.35);border-radius:8px;padding:12px 16px;margin:4px 0 8px}}
+#ob-summary dl{{display:grid;grid-template-columns:max-content 1fr;gap:6px 18px;margin:0 0 10px}}
+#ob-summary dt{{opacity:.7}} #ob-summary dd{{margin:0;font-weight:600;overflow-wrap:anywhere}}
+#ob-summary a{{color:{b.get('link', b['accent'])};font-weight:600;text-decoration:none}} #ob-summary a:hover{{text-decoration:underline}}
 #ob-settings-link,#ob-profiles-link{{margin:0!important}}
 header.MuiAppBar-root .MuiBox-root:has(> .MuiButton-root){{gap:8px!important}}
 header.MuiAppBar-root .MuiToolbar-root>.MuiBox-root{{column-gap:20px!important}}
@@ -183,6 +187,32 @@ LOCUST_JS = """
     var total = Math.round(r * u * 10) / 10;
     return u + (u === 1 ? ' user' : ' users') + ' × ' + r + ' ≈ ' + total + ' requests per second in total';
   }
+  function humanTime(v) {
+    v = (v || '').trim().toLowerCase();
+    if (!v) return 'until you press Stop';
+    if (/^\\d+$/.test(v)) return v + ' s';
+    return v.replace(/(\\d+)h/, '$1 h ').replace(/(\\d+)m/, '$1 min ').replace(/(\\d+)s/, '$1 s').trim();
+  }
+  function summary(form, after, t) {
+    var s = form.querySelector('#ob-summary');
+    if (!s) { s = document.createElement('div'); s.id = 'ob-summary'; after.after(s); }
+    var u = parseFloat(t.users) || 0, r = parseFloat(t.user_tps) || 0, peak = parseFloat(t.peak_rps) || 0,
+        factor = parseFloat(t.stress_factor) || 2;
+    var rows = [['Users', u + (u === 1 ? ' user' : ' users') + ', ramp up ' + t.spawn_rate + ' per second'],
+                ['Requests per second', r > 0 ? r + ' per user, ≈ ' + Math.round(u * r * 10) / 10 + ' in total' : 'users pause 1–3 s between requests'],
+                ['Run time', humanTime(t.run_time)]];
+    if (peak > 0) rows.push(['Throughput target', Math.round(peak * factor * 10) / 10 + ' req/s (peak ' + peak + ' × ' + factor + ')']);
+    rows.push(['Host', t.rs_host || '–']);
+    s.innerHTML = '';
+    var dl = document.createElement('dl');
+    rows.forEach(function (row) {
+      var dt = document.createElement('dt'); dt.textContent = row[0];
+      var dd = document.createElement('dd'); dd.textContent = row[1];
+      dl.appendChild(dt); dl.appendChild(dd);
+    });
+    var a = document.createElement('a'); a.href = '/ob-profiles#' + t.id; a.textContent = 'Change these in the test profile →';
+    s.appendChild(dl); s.appendChild(a);
+  }
   function tenantById(id) { return (tenants || []).filter(function (t) { return t.id === id; })[0]; }
 
   function enhanceForm(form) {
@@ -221,10 +251,13 @@ LOCUST_JS = """
         var t = tenantById(sel.value); chosen = sel.value;
         if (!t) { hint(tbox, 'Create a test profile first (Test profiles).', true); return; }
         setReact(users, t.users); setReact(ramp, t.spawn_rate);
-        if (!tpsTouched) { tps = t.user_tps; var f = form.querySelector('#ob-tps'); if (f) f.value = tps; }
-        var tf = form.querySelector('#ob-tps'); if (tf) hint(tf.closest('.MuiFormControl-root'), totalText(t.users));
+        tps = t.user_tps; var f = form.querySelector('#ob-tps'); if (f) f.value = tps;
         if (host && t.rs_host) setReact(host, t.rs_host);
-        var probs = t.issues || []; hint(tbox, !probs.length ? (t.areas.join(' + ') + ' · UK OB v' + t.version + ' · values below come from the profile and can be changed') : ('Not ready to run: ' + probs.join(' ')), probs.length > 0);
+        // Start only: everything comes from the test profile, so show it instead of editable fields
+        [users, ramp, f, host].forEach(function (i) { if (i) i.closest('.MuiFormControl-root').style.display = 'none'; });
+        form.querySelectorAll('.MuiAccordion-root').forEach(function (a) { a.style.display = 'none'; });
+        summary(form, tbox, t);
+        var probs = t.issues || []; hint(tbox, !probs.length ? (t.areas.join(' + ') + ' · UK OB v' + t.version) : ('Not ready to run: ' + probs.join(' ')), probs.length > 0);
       };
       sel.value = chosen || (tenants.filter(function (t) { return t.ready; })[0] || tenants[0] || {}).id || '';
       sel.addEventListener('change', function () { tpsTouched = false; apply(); });

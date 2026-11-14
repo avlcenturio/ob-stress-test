@@ -9,6 +9,7 @@ Headless:  locust -f locustfile.py --headless -u 20 -r 2 -t 10m --ob-profile "Pe
 import collections
 import itertools
 import json
+import re
 import logging
 import os
 import random
@@ -38,6 +39,28 @@ def add_options(parser):
 
 
 @events.init.add_listener
+def headless_profile_settings(environment, **_):
+    """Headless runs: users, ramp up and run time come from the test profile unless given on the command line."""
+    o = environment.parsed_options
+    if not o or not getattr(o, "headless", False) or getattr(o, "worker", False):
+        return
+    try:
+        pid = core.resolve_profile((getattr(o, "ob_profile", "") or "").strip() or None)
+        p = core.get_profile(pid)
+    except KeyError:
+        return
+    if o.num_users is None and p.get("users"):
+        o.num_users = int(float(p["users"]))
+    if o.spawn_rate is None and p.get("spawn_rate"):
+        o.spawn_rate = float(p["spawn_rate"])
+    if not o.run_time:
+        try:
+            o.run_time = core.run_time_seconds(p.get("run_time"))
+        except ValueError as e:
+            log.warning("%s Running until stopped.", e)
+
+
+@events.init.add_listener
 def add_pages(environment, **_):
     if environment.web_ui is None:
         return
@@ -45,6 +68,27 @@ def add_pages(environment, **_):
     ob_web.register(app, environment)
     ob_brand.register(app)
     _protect(app)
+
+    @app.before_request
+    def start_from_profile():
+        """Start: users, ramp up, requests per second, run time and host all come from the chosen test profile."""
+        from flask import request
+        from werkzeug.datastructures import ImmutableMultiDict
+        if request.path != "/swarm" or request.method != "POST" or not request.form.get("ob_profile"):
+            return None
+        try:
+            p = core.get_profile(request.form["ob_profile"])
+            run_cfg = core.get_run(request.form["ob_profile"])
+        except KeyError:
+            return None
+        form = [(k, v) for k, v in request.form.items(multi=True)
+                if k not in ("user_count", "spawn_rate", "run_time", "host", "ob_user_tps")]
+        form += [("user_count", str(int(float(p.get("users") or 1)))), ("spawn_rate", str(p.get("spawn_rate") or 1)),
+                 ("host", run_cfg.get("rs_host", "")), ("ob_user_tps", str(p.get("user_tps") or ""))]
+        if (p.get("run_time") or "").strip():
+            form.append(("run_time", p["run_time"].strip()))
+        request.form = ImmutableMultiDict(form)   # what Locust's start handler reads
+        return None
 
     @app.before_request
     def live_rate_change():
@@ -465,6 +509,43 @@ RESULTS = os.path.join(os.getcwd(), "results")
 EXEMPTION_CONFIG = os.getenv("OB_EXEMPTION_CONFIG", os.path.join(os.getcwd(), "exemption_config.yaml"))
 HAS_PDF = importlib.util.find_spec("playwright") is not None
 run = {"dir": None, "history": [], "sampler": None}
+# Per-second detail for the report: requests, errors by status code and per-endpoint timings (API calls only)
+timeline = {"secs": {}, "errors": {}}
+
+
+def _error_message(exception):
+    text = str(exception)
+    m = re.match(r"^\w+\((['\"])(.*)\1\)$", text, re.S)   # CatchResponseError('503: ...') -> 503: ...
+    return (m.group(2) if m else text)[:240]
+
+
+@events.request.add_listener
+def record_timeline(request_type, name, response_time, response_length, response=None, context=None,
+                    exception=None, **_):
+    if not run["dir"] or request_type in ("AUTH", "CONFIG") or name.endswith("(token expired)"):
+        return
+    sec = int(time.time())
+    b = timeline["secs"].setdefault(sec, {"n": 0, "codes": {}, "ep": {}})
+    b["n"] += 1
+    ep = b["ep"].setdefault(name, [0, 0.0])
+    ep[0] += 1
+    ep[1] += float(response_time or 0)
+    if exception is not None:
+        code = int(getattr(response, "status_code", 0) or 0)
+        key = str(code) if code else "no reply"
+        b["codes"][key] = b["codes"].get(key, 0) + 1
+        e = timeline["errors"].setdefault(key, {"count": 0, "first": sec, "last": sec, "endpoints": {},
+                                                "example": _error_message(exception)})
+        e["count"] += 1
+        e["last"] = sec
+        e["endpoints"][name] = e["endpoints"].get(name, 0) + 1
+
+
+def _write_timeline(prefix):
+    secs = [[s, b["n"], b["codes"], {k: [v[0], round(v[1], 1)] for k, v in b["ep"].items()}]
+            for s, b in sorted(timeline["secs"].items())]
+    with open(f"{prefix}_timeline.json", "w") as fh:
+        json.dump({"version": 1, "secs": secs, "errors": timeline["errors"]}, fh, separators=(",", ":"))
 
 
 def _is_worker(environment):
@@ -499,6 +580,7 @@ def _snapshot(environment):
         w = _csv.writer(fh)
         w.writerow(["Timestamp", "User Count", "Type", "Name", "Requests/s", "Failures/s", "50%", "95%", "99%"])
         w.writerows(run["history"])
+    _write_timeline(prefix)
     return prefix
 
 
@@ -556,6 +638,7 @@ def start_run_record(environment, **_):
         return
     run["dir"] = os.path.join(RESULTS, datetime.now().strftime("%Y-%m-%d_%H%M%S"))
     run["history"] = []
+    timeline["secs"], timeline["errors"] = {}, {}
     if cfg.ready:
         try:
             os.makedirs(run["dir"], exist_ok=True)

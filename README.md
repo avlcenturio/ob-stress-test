@@ -1,4 +1,4 @@
-# Open Banking Stress Test
+# Ozone API – Open Banking Stress Test
 
 Stress testing for UK Open Banking APIs (v3.1 and v4.0), built on [Locust](https://locust.io).
 Describe each financial institution once, define reusable test profiles, generate tokens through
@@ -87,9 +87,9 @@ institution in scope of the stress testing. **New tenant profile** walks through
 
 | Step | What you set |
 |---|---|
-| **1. Tenant** | Name, OpenID discovery URL, TLS certificate verification. *Fetch discovery document* fills in everything the financial institution publishes |
+| **1. Tenant** | Name and OpenID discovery URL. *Fetch discovery document* fills in everything the financial institution publishes; if its server uses self-signed certificates, you're offered *Accept self-signed certificates and retry* |
 | **2. URLs** | Resource server (suggested), issuer, authorisation and token endpoints, client ID, client authentication, redirect URL, response type |
-| **3. Certificates** | Transport certificate and key (mTLS), signing key and key ID, signature issuer. Checked on upload: format, expiry, key matches certificate |
+| **3. Certificates** | TLS certificate verification (and CA file), transport certificate and key (mTLS), signing key and key ID, signature issuer. Checked on upload: format, expiry, key matches certificate |
 | **4. Supported APIs** | AIS, PIS and/or CoF, and the UK Open Banking version (3.1 or 4.0) |
 | **5. AIS / PIS / CoF APIs** | The endpoints this financial institution supports |
 | **6. Review and save** | Summary, anything still missing, *Test connection* |
@@ -122,7 +122,7 @@ profile and holds everything that changes from test to test.
 |---|---|
 | **1. Profile** | Name and tenant profile |
 | **2. Scope** | The areas to test (only those the tenant profile supports) and, for each, the APIs to call with their weights |
-| **3. Load** | Users, ramp up, requests per second per user (the total is shown live), mix of users between areas |
+| **3. Load** | Users, ramp up, requests per second per user (the total is shown live), run time (e.g. 10m, 1h30m; empty = until Stop), peak-hour requests per second of the existing digital channel and the stress factor (the throughput target is shown live), mix of users between areas |
 | **4. AIS / PIS / CoF tokens** | How tokens are supplied, plus the test data |
 | **5. Review and save** | Summary and anything still missing |
 
@@ -150,28 +150,21 @@ for the **Report**, **Summary** and **CSV** data.
 
 ## Running a test
 
-On Locust's start page:
-
-| Field | |
-|---|---|
-| **Test profile** | Fills in the fields below and the Host from the profile |
-| **Number of users** | Concurrent simulated users |
-| **Ramp up** | Users started per second, e.g. 2 = 20 users running after 10 s |
-| **Requests per second per user** | The total is shown underneath, e.g. 20 users × 2 ≈ 40 requests per second |
-| **Host** | The resource server, from the tenant profile |
-
-Everything can still be changed before **Start**. **Edit** during a run changes the users and the
-requests per second, which apply within seconds.
+On Locust's start page, choose the **Test profile** and press **Start**. Everything else comes from the
+profile: users, ramp up, requests per second per user, run time, throughput target and host are shown
+as a summary, with a link to change them in the test profile. The test stops by itself after the
+profile's run time (or runs until **Stop** if the run time is empty). **Edit** during a run can still
+change the users and the requests per second; they apply within seconds.
 
 **Without the web UI:**
 
 ```bash
 locust -f locustfile.py --headless -u 20 -r 2 -t 10m --ob-profile "Peak AIS"
 # with Docker:
-docker compose run --rm stress-test --headless -u 20 -r 2 -t 10m --ob-profile "Peak AIS"
+docker compose run --rm ob-stress-test --headless -u 20 -r 2 -t 10m --ob-profile "Peak AIS"
 ```
 
-`--ob-user-tps` overrides the profile's requests per second per user.
+Users, ramp up and run time come from the profile; `-u`, `-r` and `-t` on the command line override them, and `--ob-user-tps` overrides the requests per second per user.
 
 **Choosing the numbers:** a single user waits for each response before sending the next request, so
 it can manage at most about `1000 / average response time (ms)` requests per second. For more load,
@@ -188,12 +181,14 @@ browser's print dialog, where *Save as PDF* gives the same result.
 
 The report contains:
 
-1. The tenant profile, test profile, standard, areas tested and every URL from the discovery document
-2. The verdict and key figures
-3. The Open Banking benchmarks table
-4. *What we found*: only when the run fails, naming what failed and where
-5. Charts: throughput and users, response time under load, error rate
-6. Endpoints: per-endpoint results, and failures
+- The tenant profile, test profile, standard, areas tested and every URL from the discovery document
+- The verdict and key figures, plus a note when many requests got errors other than 5xx (e.g. 429 rate limiting)
+- **Benchmarks:** throughput and users, performance, error rate, availability
+- *What we found*: only when the run fails, naming what failed and where
+- **1. Throughput and users:** requests per second and users, with the throughput target line
+- **2. Performance:** average response time per endpoint over time, average per endpoint, percentiles (for engineers)
+- **3. Error rate:** 5xx errors against the benchmark, all other errors by type, and the errors-by-type table
+- **4. Endpoints summary:** requests, average, p95, 5xx and 4xx per endpoint
 
 ### Open Banking benchmarks
 
@@ -201,11 +196,12 @@ From the OBL Operational Guidelines v4.0.1, *Availability and performance*:
 
 | Requirement | Benchmark | In the stress test report |
 |---|---|---|
+| **Throughput and users** | ≥ peak-hour requests per second of the existing digital channel × stress factor (2) | Sustained requests per second once all users are running; *Not assessed* if no peak-hour figure is set |
 | **Performance** | Average response ≤ 750 ms per endpoint (AIS: per page of up to 100 records) | Every API endpoint's average must meet it |
 | **Error rate** | ≤ 0.5% 5xx responses | 5xx only; 4xx are attributable to the TPP |
 | **Availability** | 99.5% uptime per quarter | **Not in scope.** Availability is measured over a longer period and belongs in a dedicated availability report covering at least three months |
 
-A run **passes** when performance and error rate are both met. Token renewals and settings lines
+A run **passes** when throughput (if a target is set), performance and error rate are all met. The throughput target is the busiest hour of the existing digital channel (PSU interface) multiplied by the stress factor, 2 by default, to add the stress element; within 2% counts as met. Token renewals and settings lines
 are shown in the tables but don't count towards the verdict. Percentiles (median, p95, p99) are
 shown for information; Locust approximates them by rounding to 10 ms between 100 ms and 1 s, and to
 100 ms above 1 s.
@@ -225,7 +221,7 @@ python report.py results/2026-11-13_101500/run --avg-ms 750 --max-5xx-pct 0.5
 
 ```bash
 docker compose up -d --build          # start (data is kept in the ob-data volume)
-docker compose logs -f                # follow the log
+docker compose logs -f ob-stress-test # follow the log
 docker compose down                   # stop; data is kept
 ```
 
@@ -258,7 +254,7 @@ docker compose down                   # stop; data is kept
 
 | Name | Type | Value |
 |---|---|---|
-| `DOCKERHUB_REPO` | variable | e.g. `yourname/ozone-ob-stress-test` |
+| `DOCKERHUB_REPO` | variable | e.g. `yourname/ob-stress-test` |
 | `DOCKERHUB_USERNAME` | secret | Docker Hub user |
 | `DOCKERHUB_TOKEN` | secret | Docker Hub access token (read & write) |
 | `DEPLOY_ENABLED` | variable | `true` to deploy version tags |
@@ -273,20 +269,20 @@ environment to approve each deployment.
 ### Moving an image without a registry
 
 ```bash
-docker save ozone-ob-stress-test | gzip > ozone-ob-stress-test.tar.gz
-docker load < ozone-ob-stress-test.tar.gz      # on the server
+docker save ob-stress-test | gzip > ob-stress-test.tar.gz
+docker load < ob-stress-test.tar.gz      # on the server
 ```
 
 Apple Silicon builds ARM images; for an x86 server use
-`docker buildx build --platform linux/amd64 -t ozone-ob-stress-test --load .`
+`docker buildx build --platform linux/amd64 -t ob-stress-test --load .`
 
 ### Moving existing data into Docker
 
 ```bash
-docker compose cp ob_tenants.json stress-test:/data/
-docker compose cp ob_profiles.json stress-test:/data/
-docker compose cp ob_tokens.json stress-test:/data/
-docker compose cp certs stress-test:/data/
+docker compose cp ob_tenants.json ob-stress-test:/data/
+docker compose cp ob_profiles.json ob-stress-test:/data/
+docker compose cp ob_tokens.json ob-stress-test:/data/
+docker compose cp certs ob-stress-test:/data/
 docker compose restart
 ```
 
@@ -302,7 +298,7 @@ Certificate paths are resolved inside the data folder automatically.
 |---|---|---|
 | `OB_WEB_USER`, `OB_WEB_PASSWORD` | app | When both are set, every page asks for this login (`/ob-health` stays open) |
 | `OB_BIND` | compose | Address the port binds to: `127.0.0.1` (default, this machine only) or `0.0.0.0` |
-| `OB_IMAGE` | `docker-compose.deploy.yml` | Image to run, e.g. `yourname/ozone-ob-stress-test:1.2.3` |
+| `OB_IMAGE` | `docker-compose.deploy.yml` | Image to run, e.g. `yourname/ob-stress-test:1.2.3` |
 | `OB_HEALTH_SCHEME` | health check | `https` when Locust serves HTTPS (set by the server compose files) |
 | `OB_PROFILE` | headless runs | Test profile to run, same as `--ob-profile` |
 | `OB_USER_TPS` | headless runs | Requests per second per user, same as `--ob-user-tps` |

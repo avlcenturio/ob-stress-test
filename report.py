@@ -196,67 +196,219 @@ def mark_bp(ax, hist, bp):
     if bp:
         x = (bp["ts"] - hist[0]["ts"]) / 60
         ax.axvline(x, color=C_BAD, lw=1, ls=":")
-        ax.annotate("breaking point", (x, 0), xycoords=("data", "axes fraction"),
+        ax.annotate("degradation point", (x, 0), xycoords=("data", "axes fraction"),
                     xytext=(4, 4), textcoords="offset points", color=C_BAD, fontsize=9)
 
 
-def chart_throughput(hist, bp):
+def chart_throughput(hist, bp, target=None):
     x = elapsed_min(hist)
     fig, ax = plt.subplots(figsize=(9, 3.2))
     ax.plot(x, [h["rps"] for h in hist], color=C_RPS, lw=1.8, label="Requests/s")
+    if target:
+        ax.axhline(target["value"], color=C_BAD, lw=1, ls="--",
+                   label=f"Target {target['value']:g} req/s ({target['factor']:g} × peak {target['peak']:g} req/s)")
     ax.set_ylabel("Requests/s")
     ax.set_xlabel("Minutes into test")
+    ax.set_ylim(bottom=0)
     ax2 = ax.twinx()
     ax2.plot(x, [h["users"] for h in hist], color=C_USERS, lw=1.2, ls="--", label="Users")
     ax2.set_ylabel("Concurrent users")
+    ax2.set_ylim(bottom=0)
     ax2.grid(False)
     ax2.spines["right"].set_visible(True)
     mark_bp(ax, hist, bp)
-    lines = ax.get_lines()[:1] + ax2.get_lines()
-    ax.legend(lines, [l.get_label() for l in lines], loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2)
+    lines = [l for l in ax.get_lines() if not l.get_label().startswith("_")] + ax2.get_lines()
+    ax.legend(lines, [l.get_label() for l in lines], loc="lower left", bbox_to_anchor=(0, 1.0), ncol=3)
     return to_svg(fig)
 
 
-def chart_latency(hist, bp, slo):
+def chart_latency(hist, bp, slo=None):
+    """Rolling percentiles across all endpoints (informational)."""
     x = elapsed_min(hist)
     fig, ax = plt.subplots(figsize=(9, 3.2))
-    for key, color, label in (("p50", C_P50, "p50"), ("p95", C_P95, "p95"), ("p99", C_P99, "p99")):
-        ax.plot(x, [h[key] for h in hist], color=color, lw=1.6, label=label)
-    ax.axhline(slo, color=C_BAD, lw=1, ls="--", label=f"OBL benchmark ({slo:,.0f} ms, average)")
+    for key, color, lab in (("p50", C_P50, "p50"), ("p95", C_P95, "p95"), ("p99", C_P99, "p99")):
+        ax.plot(x, [h[key] for h in hist], color=color, lw=1.6, label=lab)
+    if slo:
+        ax.axhline(slo, color=C_BAD, lw=1, ls="--", label=f"OBL benchmark ({slo:,.0f} ms, average)")
     mark_bp(ax, hist, bp)
     ax.set_ylabel("Response time (ms)")
     ax.set_xlabel("Minutes into test")
+    ax.set_ylim(bottom=0)
     ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=4)
     return to_svg(fig)
 
 
 def chart_errors(hist, bp, slo):
+    """All errors together: used for runs recorded before errors were split by type."""
     x = elapsed_min(hist)
     fig, ax = plt.subplots(figsize=(9, 2.6))
     ax.fill_between(x, [h["err_pct"] for h in hist], color=C_BAD, alpha=0.25, lw=0)
-    ax.plot(x, [h["err_pct"] for h in hist], color=C_BAD, lw=1.4)
-    ax.axhline(slo, color=INK, lw=1, ls="--")
-    ax.annotate(f"OBL benchmark {slo:g}% (5xx)", (0, slo), xytext=(2, 3), textcoords="offset points", fontsize=9)
+    ax.plot(x, [h["err_pct"] for h in hist], color=C_BAD, lw=1.4, label="All errors, incl. 4xx (% of requests)")
     mark_bp(ax, hist, bp)
-    ax.set_ylabel("Error rate (%)")
+    ax.set_ylabel("% of requests")
     ax.set_xlabel("Minutes into test")
     ax.set_ylim(bottom=0)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0))
     return to_svg(fig)
 
 
 def chart_endpoints(endpoints, slo):
     eps = sorted([e for e in endpoints if e["count"]], key=lambda e: e["avg"] or 0)
-    fig, ax = plt.subplots(figsize=(9, 0.45 * len(eps) + 1))
+    fig, ax = plt.subplots(figsize=(9, 0.42 * len(eps) + 1.1))
     labels = [label(e) for e in eps]
     vals = [e["avg"] or 0 for e in eps]
     ax.barh(labels, vals, color=[C_BAD if v > slo else C_P95 for v in vals], height=0.6)
-    ax.axvline(slo, color=C_BAD, lw=1, ls="--")
+    ax.axvline(slo, color=C_BAD, lw=1, ls="--", label=f"OBL benchmark {slo:,.0f} ms (average)")
+    for y, v in enumerate(vals):
+        ax.annotate(f"{v:,.0f} ms", (v, y), xytext=(4, 0), textcoords="offset points", va="center", fontsize=8.5)
+    ax.set_xlim(0, max(vals + [slo]) * 1.12)
     ax.set_xlabel("Average response time (ms)")
     ax.grid(axis="y", visible=False)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0))
     return to_svg(fig)
 
 
-# ------------------------------------------------------------- output ----
+# ---------------------------------------------------------- run timeline ----
+# Written by the load test (run_timeline.json): per second the API requests, errors by status code and
+# per-endpoint count and total response time.
+
+def load_timeline(prefix):
+    path = f"{prefix}_timeline.json"
+    if not os.path.exists(path):
+        return None
+    try:
+        import json
+        with open(path) as fh:
+            data = json.load(fh)
+    except ValueError:
+        return None
+    secs = data.get("secs") or []
+    if len(secs) < 2:
+        return None
+    t0, t1 = secs[0][0], secs[-1][0]
+    span = list(range(t0, t1 + 1))
+    by = {s[0]: s for s in secs}
+    n = [by[s][1] if s in by else 0 for s in span]
+    codes = sorted({c for s in secs for c in s[2]})
+    err = {c: [by[s][2].get(c, 0) if s in by else 0 for s in span] for c in codes}
+    names = sorted({k for s in secs for k in s[3]})
+    ep = {k: ([by[s][3].get(k, [0, 0])[0] if s in by else 0 for s in span],
+              [by[s][3].get(k, [0, 0])[1] if s in by else 0 for s in span]) for k in names}
+    return {"t0": t0, "ts": span, "n": n, "err": err, "ep": ep, "errors": data.get("errors") or {}}
+
+
+def _window(values, w=10):
+    """Sum over the last w seconds (inclusive)."""
+    out, acc = [], 0.0
+    for i, v in enumerate(values):
+        acc += v
+        if i >= w:
+            acc -= values[i - w]
+        out.append(acc)
+    return out
+
+
+def is_5xx(code):
+    return code.isdigit() and code.startswith("5")
+
+
+def code_label(code):
+    if code == "no reply":
+        return "No reply / timeout"
+    try:
+        from http import HTTPStatus
+        return f"{code} {HTTPStatus(int(code)).phrase}"
+    except (ValueError, KeyError):
+        return code
+
+
+def tl_pct(tl, codes, w=10):
+    """Rolling share (%) of requests that ended with one of these codes."""
+    n = _window(tl["n"], w)
+    hits = _window([sum(tl["err"][c][i] for c in codes if c in tl["err"]) for i in range(len(tl["n"]))], w)
+    return [100.0 * h / t if t else 0.0 for h, t in zip(hits, n)]
+
+
+def tl_avg(tl, name, w=10):
+    cnt, ms = tl["ep"][name]
+    c, m = _window(cnt, w), _window(ms, w)
+    return [mm / cc if cc else None for cc, mm in zip(c, m)]
+
+
+def chart_avg_over_time(tl, slo, bp_ts=None, top=4):
+    x = [(s - tl["t0"]) / 60 for s in tl["ts"]]
+    overall = {k: (sum(tl["ep"][k][1]) / max(1, sum(tl["ep"][k][0]))) for k in tl["ep"]}
+    ranked = sorted(overall, key=lambda k: -overall[k])
+    colours = [C_P95, C_P99, C_P50, "#8c6bc2"]
+    fig, ax = plt.subplots(figsize=(9, 3.6))
+    for name, col in zip(ranked[:top], colours):
+        ax.plot(x, tl_avg(tl, name), color=col, lw=1.5, label=name.split(" ", 1)[-1])
+    rest = ranked[top:]
+    if rest:
+        series = [tl_avg(tl, k) for k in rest]
+        mean = []
+        for i in range(len(x)):
+            vals = [s[i] for s in series if s[i] is not None]
+            mean.append(sum(vals) / len(vals) if vals else None)
+        ax.plot(x, mean, color=C_USERS, lw=1.3, label=f"others ({len(rest)}, mean)")
+    ax.axhline(slo, color=C_BAD, lw=1, ls="--", label=f"OBL benchmark {slo:,.0f} ms")
+    if bp_ts:
+        bx = (bp_ts - tl["t0"]) / 60
+        ax.axvline(bx, color=C_BAD, lw=1, ls=":")
+        ax.annotate("degradation point", (bx, 0), xycoords=("data", "axes fraction"), xytext=(4, 4),
+                    textcoords="offset points", color=C_BAD, fontsize=9)
+    ax.set_ylabel("Average response (ms)")
+    ax.set_xlabel("Minutes into test")
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=3, fontsize=8.5)
+    return to_svg(fig)
+
+
+def chart_5xx(tl, slo):
+    x = [(s - tl["t0"]) / 60 for s in tl["ts"]]
+    pct = tl_pct(tl, [c for c in tl["err"] if is_5xx(c)])
+    fig, ax = plt.subplots(figsize=(9, 2.6))
+    ax.plot(x, pct, color=C_BAD, lw=1.8, label="5xx responses (% of requests)")
+    ax.axhline(slo, color=C_BAD, lw=1, ls="--", label=f"OBL benchmark {slo:g}%")
+    ax.set_ylim(0, max([slo * 2] + [p * 1.15 for p in pct]))
+    ax.set_ylabel("% of requests")
+    ax.set_xlabel("Minutes into test")
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=2)
+    return to_svg(fig)
+
+
+def chart_other_errors(tl):
+    others = [c for c in tl["err"] if not is_5xx(c)]
+    if not others:
+        return None
+    order = sorted(others, key=lambda c: -sum(tl["err"][c]))
+    palette = [C_P50, C_P95, "#e07ab0", "#8fd18a", C_USERS, "#8c6bc2", C_P99, "#c9a227"]
+    x = [(s - tl["t0"]) / 60 for s in tl["ts"]]
+    fig, ax = plt.subplots(figsize=(9, 3.2))
+    for c, col in zip(order, palette * 3):
+        ax.plot(x, tl_pct(tl, [c]), color=col, lw=1.5, label=code_label(c))
+    ax.set_ylabel("% of requests")
+    ax.set_xlabel("Minutes into test")
+    ax.set_ylim(bottom=0)
+    ax.legend(loc="lower left", bbox_to_anchor=(0, 1.0), ncol=3, fontsize=8.5)
+    return to_svg(fig)
+
+
+def degradation_from_timeline(tl, hist, args):
+    """First moment an endpoint's 10 s average or the 5xx share stayed over the benchmark for --sustain seconds."""
+    start = args.warmup
+    series = [tl_avg(tl, k) for k in tl["ep"]]
+    p5 = tl_pct(tl, [c for c in tl["err"] if is_5xx(c)])
+    run = 0
+    for i in range(len(tl["ts"])):
+        bad = (any(s[i] is not None and s[i] > args.avg_ms for s in series) or p5[i] > args.max_5xx_pct)
+        run = run + 1 if (bad and i >= start) else 0
+        if run >= args.sustain:
+            ts = tl["ts"][i - args.sustain + 1]
+            users = next((h["users"] for h in hist if h["ts"] >= ts), hist[-1]["users"] if hist else 0)
+            return {"ts": ts, "users": users}
+    return None
+
 
 def label(e):
     """Endpoint label; avoids 'GET GET /x' when the request name already has the method."""
@@ -321,12 +473,30 @@ def classify_failures(failures):
     return out
 
 
-def obl_assessment(endpoints, total, hist, failures, args):
+def sustained_throughput(hist):
+    """Average requests per second once all users are running (the ramp-up doesn't count)."""
+    if not hist:
+        return None, 0
+    peak = max(h["users"] for h in hist)
+    first = next(i for i, h in enumerate(hist) if h["users"] == peak)
+    window = [h["rps"] for h in hist[first + 3:] if h["users"] == peak] or [h["rps"] for h in hist[first:]]
+    return (sum(window) / len(window) if window else None), peak
+
+
+def throughput_target(run_ctx):
+    peak = (run_ctx or {}).get("peak_rps")
+    if not peak:
+        return None
+    factor = (run_ctx or {}).get("stress_factor") or 2.0
+    return {"peak": peak, "factor": factor, "value": round(peak * factor, 2)}
+
+
+def obl_assessment(endpoints, total, hist, failures, args, run_ctx=None):
     kinds = classify_failures(failures)
     api = [e for e in endpoints if is_api(e) and e["count"]]
     for e in endpoints:
         k = kinds.get((e["method"], e["name"]), {"5xx": 0, "no_reply": 0, "4xx": 0})
-        e["n5xx"], e["no_reply"] = k["5xx"], k["no_reply"]
+        e["n5xx"], e["no_reply"], e["n4xx"] = k["5xx"], k["no_reply"], k["4xx"]
         e["pct5xx"] = 100.0 * e["n5xx"] / e["count"] if e["count"] else 0.0
         e["area"] = area_of(e) if is_api(e) else ("Token" if e["method"] == "AUTH" else "Settings")
         e["ok"] = (not is_api(e)) or ((e["avg"] or 0) <= args.avg_ms and e["pct5xx"] <= args.max_5xx_pct)
@@ -336,38 +506,109 @@ def obl_assessment(endpoints, total, hist, failures, args):
     pct5xx = 100.0 * n5xx / requests_
     slow = sorted([e for e in api if (e["avg"] or 0) > args.avg_ms], key=lambda e: -(e["avg"] or 0))
     worst = max(api, key=lambda e: e["avg"] or 0, default=None)
+    sustained, peak_users = sustained_throughput(hist)
+    target = throughput_target(run_ctx)
+    if target and sustained is not None:
+        t_ok = sustained >= target["value"] * 0.98      # within 2%: smoothing of the per-second measurement
+        t_check = {"name": "Throughput and users", "ok": t_ok,
+                   "target": f"≥ {target['factor']:g} × peak-hour requests per second of the existing digital channel "
+                             f"({target['peak']:g} req/s × {target['factor']:g} = {target['value']:g} req/s)",
+                   "measured": f"{sustained:,.1f} req/s sustained with {peak_users:,.0f} concurrent users"}
+    else:
+        t_check = {"name": "Throughput and users", "ok": None, "na": "Not assessed",
+                   "target": "≥ 2 × peak-hour requests per second of the existing digital channel",
+                   "measured": (f"{sustained:,.1f} req/s sustained with {peak_users:,.0f} concurrent users; "
+                                if sustained is not None else "") +
+                               "no target: peak-hour usage isn’t set in the test profile"}
     checks = [
-        {"name": "Availability", "target": f"{args.availability_pct:g}% uptime per quarter", "ok": None,
-         "measured": "Not in the scope of a stress test"},
+        t_check,
         {"name": "Performance", "target": f"average ≤ {args.avg_ms:,.0f} ms per endpoint response", "ok": not slow,
          "measured": (f"slowest endpoint averages {fmt_ms(worst['avg'])} ({label(worst)})" if worst else "no API calls")
          + (f"; {len(slow)} endpoint(s) over" if slow else "")},
         {"name": "Error rate", "target": f"≤ {args.max_5xx_pct:g}% 5xx responses", "ok": pct5xx <= args.max_5xx_pct,
          "measured": f"{pct5xx:.2f}% ({n5xx:,} of {requests_:,} requests)"
          + (f"; {no_reply:,} got no reply" if no_reply else "")},
+        {"name": "Availability", "target": f"{args.availability_pct:g}% uptime per quarter", "ok": None,
+         "na": "Not in scope",
+         "measured": "Not in the scope of a stress test; reported in a dedicated availability report over at least "
+                     "three months"},
     ]
     findings = []
+    if t_check["ok"] is False:
+        findings.append(f"Throughput: {sustained:,.1f} req/s sustained against a target of {target['value']:g} req/s "
+                        f"({target['factor']:g} × peak {target['peak']:g} req/s). Add users or raise the requests per "
+                        "second per user, or check whether the financial institution limited the rate.")
     for e in slow:
         findings.append(f"Performance: {label(e)} averaged {fmt_ms(e['avg'])} against {args.avg_ms:,.0f} ms "
                         f"(p95 {fmt_ms(e['p95'])}, {e['count']:,} requests).")
     if not checks[2]["ok"]:
         for e in sorted([e for e in api if e["n5xx"]], key=lambda e: -e["n5xx"])[:5]:
-            findings.append(f"Error rate: {label(e)} returned {e['n5xx']:,} 5xx responses ({e['pct5xx']:.2f}%).")
+            findings.append(f"Error rate: {label(e)} returned {e['n5xx']:,} 5xx response{'s' if e['n5xx'] != 1 else ''} "
+                            f"({e['pct5xx']:.2f}%).")
     return {"checks": checks, "findings": findings, "passed": all(c["ok"] for c in checks if c["ok"] is not None),
-            "pct5xx": pct5xx, "worst": worst}
+            "pct5xx": pct5xx, "worst": worst, "sustained": sustained, "peak_users": peak_users, "target": target,
+            "requests": requests_, "n4xx": sum(e["n4xx"] for e in api), "no_reply": no_reply}
 
 
 def verdict_text(assess, total, hist, bp, args):
-    peak_users = max((h["users"] for h in hist), default=0)
+    peak_users = assess.get("peak_users") or max((h["users"] for h in hist), default=0)
     c = {x["name"]: x for x in assess["checks"]}
     if assess["passed"]:
-        return ("Passed", f"Meets the Open Banking benchmarks for performance (every endpoint averages within "
-                f"{args.avg_ms:,.0f} ms) and error rate "
-                f"({assess['pct5xx']:.2f}% 5xx), with up to {peak_users:.0f} concurrent users.")
+        parts = []
+        if c["Throughput and users"]["ok"]:
+            parts.append(f"throughput ({assess['sustained']:,.1f} req/s sustained against a "
+                         f"{assess['target']['value']:g} req/s target)")
+        parts.append(f"performance (every endpoint averages within {args.avg_ms:,.0f} ms)")
+        parts.append(f"error rate ({assess['pct5xx']:.2f}% 5xx)")
+        listed = ", ".join(parts[:-1]) + " and " + parts[-1]
+        return ("Passed", f"Meets the benchmarks for {listed}, with up to {peak_users:.0f} concurrent users.")
     missed = [x["name"].lower() for x in assess["checks"] if x["ok"] is False]
     listed = missed[0] if len(missed) == 1 else ", ".join(missed[:-1]) + " and " + missed[-1]
-    return ("Failed", "Misses the Open Banking benchmark for " + listed +
+    return ("Failed", "Misses the benchmark for " + listed +
             f", with up to {peak_users:.0f} concurrent users. See What we found.")
+
+
+def errors_by_type(tl, failures, hist, api_requests):
+    """One row per error type: counts towards the benchmark, count, share, where and when, example message."""
+    rows = []
+    t0 = hist[0]["ts"] if hist else None
+
+    def when(first, last):
+        if t0 is None or first is None:
+            return ""
+        users = next((h["users"] for h in hist if h["ts"] >= first), None)
+        f, l = (first - t0) / 60, (last - t0) / 60
+        span = f"at {f:.1f} min" if abs(l - f) < 0.1 else f"{f:.1f}–{l:.1f} min"
+        return span + (f" (from ≈ {users:.0f} users)" if users else "")
+    if tl and tl.get("errors"):
+        for code, e in tl["errors"].items():
+            eps = sorted(e["endpoints"].items(), key=lambda kv: -kv[1])
+            where = ", ".join(k.split(" ", 1)[-1] for k, _ in eps[:3]) + (f" +{len(eps) - 3} more" if len(eps) > 3 else "")
+            rows.append({"code": code, "count": e["count"], "where": where, "when": when(e["first"], e["last"]),
+                         "example": e.get("example", "")})
+    else:   # older runs: from the failures table, without timings
+        groups = {}
+        for f in failures:
+            m = STATUS.search(f.get("Error") or "")
+            code = m.group(1) if m else ("no reply" if NO_REPLY.search(f.get("Error") or "") else "other")
+            g = groups.setdefault(code, {"code": code, "count": 0, "eps": {}, "example": ""})
+            n = int(num(f.get("Occurrences")) or 0)
+            g["count"] += n
+            g["eps"][f.get("Name", "")] = g["eps"].get(f.get("Name", ""), 0) + n
+            g["example"] = g["example"] or re.sub(r"^\w+\((['\"])(.*)\1\)$", r"\2", f.get("Error") or "")[:240]
+        for g in groups.values():
+            eps = sorted(g["eps"].items(), key=lambda kv: -kv[1])
+            rows.append({"code": g["code"], "count": g["count"], "when": "",
+                         "where": ", ".join(k.split(" ", 1)[-1] for k, _ in eps[:3]) + (f" +{len(eps) - 3} more" if len(eps) > 3 else ""),
+                         "example": g["example"]})
+    if not any(is_5xx(r["code"]) for r in rows):
+        rows.append({"code": "5xx", "count": 0, "where": "–", "when": "", "example": "–"})
+    for r in rows:
+        r["counts"] = is_5xx(r["code"]) or r["code"] == "5xx"
+        r["share"] = 100.0 * r["count"] / api_requests if api_requests else 0.0
+        r["label"] = "5xx" if r["code"] == "5xx" else code_label(r["code"])
+    rows.sort(key=lambda r: (not r["counts"], -r["count"]))
+    return rows
 
 
 CSS = """
@@ -415,6 +656,11 @@ button.pdf:hover{filter:brightness(1.08)}
 dl.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px 24px;margin:0 0 12px}
 dl.meta dt{color:var(--muted);font-size:.8rem} dl.meta dd{margin:2px 0 0;font-weight:600}
 table.bench{table-layout:fixed}
+.callout{border-left:4px solid var(--steel);background:color-mix(in srgb,var(--steel) 8%%,transparent);padding:10px 14px;border-radius:6px;margin:0 0 20px;font-size:.95rem}
+td.l,th.l{text-align:left!important;white-space:normal!important}
+td.err{white-space:normal!important;min-width:220px;max-width:340px;color:var(--muted);font-size:.85rem;font-family:ui-monospace,Consolas,monospace}
+.na{color:var(--muted);font-weight:600}
+main h3{font-size:1rem;margin:22px 0 4px}
 table.bench th,table.bench td{text-align:left!important;white-space:normal!important;vertical-align:top}
 table.bench th:nth-child(1){width:18%%} table.bench th:nth-child(2){width:30%%} table.bench th:nth-child(4){width:14%%}
 table.urls{width:100%%;border-collapse:collapse;font-size:.88rem;table-layout:fixed}
@@ -472,26 +718,40 @@ document.getElementById("pdfBtn").addEventListener("click", async function () {
 """
 
 
+def _result_cell(c):
+    if c["ok"] is None:
+        return f"<td class=\"na\">{html.escape(c.get('na', 'Not in scope'))}</td>"
+    return f"<td class=\"{'ok' if c['ok'] else 'bad'}\">{'Met' if c['ok'] else 'Not met'}</td>"
+
+
+BENCH_NOTE = ("Throughput is set from the existing digital channel: the requests per second it handles in its peak "
+              "hour, multiplied by 2 to add the stress element. Performance and error rate are the recommended "
+              f"benchmarks from the {OBL_REF}; only 5xx responses count as errors, as 4xx are attributable to the "
+              "TPP. Availability is not in the scope of a stress test.")
+
+
 def build_html(ctx):
     e = html.escape
+    a = ctx["args"]
     run_id = str((ctx.get("run_ctx") or {}).get("run_id", ""))
+    charts = ctx["charts"]
+    tgt = ctx.get("target")
     rows = "".join(
-        f"<tr><td>{e(label(x))}</td><td>{e(x.get('area', ''))}</td><td>{x['count']:,}</td>"
-        f"<td>{fmt_ms(x['avg'])}</td><td>{fmt_ms(x['p95'])}</td><td>{fmt_ms(x['max'])}</td>"
-        f"<td>{x.get('n5xx', 0):,}</td><td>{x['err_pct']:.2f}%</td><td>{(x['rps'] or 0):.1f}</td>"
+        f"<tr><td class=\"l\">{e(label(x))}</td><td>{x['count']:,}</td><td>{fmt_ms(x['avg'])}</td>"
+        f"<td>{fmt_ms(x['p95'])}</td><td>{x.get('n5xx', 0):,}</td>"
+        f"<td>{x.get('n4xx', 0):,}" + (f" ({100.0 * x.get('n4xx', 0) / x['count']:.1f}%)" if x.get('n4xx') and x['count'] else "") + "</td>"
         f"<td class=\"{'ok' if x['ok'] else 'bad'}\">{('Pass' if x['ok'] else 'Fail') if is_api(x) else '–'}</td></tr>"
         for x in ctx["endpoints"])
-    bench = "".join(
-        f"<tr><td>{e(c['name'])}</td><td>{e(c['target'])}</td><td>{e(c['measured'])}</td>"
-        f"<td class=\"{'na' if c['ok'] is None else 'ok' if c['ok'] else 'bad'}\">"
-        f"{'Not in scope' if c['ok'] is None else 'Met' if c['ok'] else 'Not met'}</td></tr>" for c in ctx["checks"])
-    fails = "".join(
-        f"<tr><td>{e(label(f))}</td>"
-        f"<td class=\"err\">{e((f.get('Error') or '')[:400])}</td><td>{int(num(f.get('Occurrences')) or 0):,}</td></tr>"
-        for f in ctx["failures"])
+    bench = "".join(f"<tr><td>{e(c['name'])}</td><td>{e(c['target'])}</td><td>{e(c['measured'])}</td>{_result_cell(c)}</tr>"
+                    for c in ctx["checks"])
+    et = "".join(
+        f"<tr><td class=\"l\"><b>{e(r['label'])}</b></td><td class=\"l\">{'Yes' if r['counts'] else 'No'}"
+        f"{' · availability out of scope' if r['code'] == 'no reply' else ''}</td>"
+        f"<td>{r['count']:,}</td><td>{r['share']:.2f}%</td>"
+        f"<td class=\"l\">{e(r['where'] or '–')}{('; ' + e(r['when'])) if r['when'] else ''}</td>"
+        f"<td class=\"l err\">{e(r['example'] or '–')}</td></tr>" for r in ctx["error_types"])
     facts = "".join(f"<div><dt>{e(k)}</dt><dd>{e(v)}</dd></div>" for k, v in ctx["facts"])
     obs = "".join(f"<li>{e(n)}</li>" for n in ctx["notes"])
-    charts = ctx["charts"]
     status = "pass" if ctx["verdict"][0] == "Passed" else "fail"
 
     parts = [f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -502,30 +762,58 @@ def build_html(ctx):
 {details_html(ctx)}
 <section class="verdict {status}"><strong>{ctx['verdict'][0]}</strong><p>{e(ctx['verdict'][1])}</p></section>
 <dl class="facts">{facts}</dl>"""]
-    parts.append(f"<h2>Open Banking benchmarks</h2><p class=\"note\">Recommended benchmarks from the {OBL_REF}. "
-                 "Only 5xx responses count as errors, as 4xx are attributable to the TPP. Availability is not in the "
-                 "scope of a stress test: it is measured over a longer period and should be reported in a dedicated "
-                 "availability report covering at least three months (OBL measures it per quarter).</p>"
-                 "<div class=\"scroll\"><table class=\"bench\"><thead><tr><th>Requirement</th><th>Benchmark</th><th>This run</th>"
-                 f"<th>Result</th></tr></thead><tbody>{bench}</tbody></table></div>")
+    if ctx.get("callout"):
+        parts.append(f"<div class=\"callout\">{ctx['callout']}</div>")
+    parts.append(f"<h2>Benchmarks</h2><p class=\"note\">{e(BENCH_NOTE)}</p>"
+                 "<div class=\"scroll\"><table class=\"bench\"><thead><tr><th>Requirement</th><th>Benchmark</th>"
+                 f"<th>This run</th><th>Result</th></tr></thead><tbody>{bench}</tbody></table></div>")
     if obs and ctx["verdict"][0] != "Passed":
         parts.append(f"<h2>What we found</h2><ul class=\"obs\">{obs}</ul>")
+    if charts.get("throughput"):
+        tnote = ("Requests per second and concurrent users over the run." +
+                 (f" The target line is the peak-hour usage of the existing digital channel ({tgt['peak']:g} req/s) "
+                  f"multiplied by {tgt['factor']:g}, the stress element. Sustained throughput is measured once all "
+                  "users are running." if tgt else " No throughput target: set the peak-hour usage in the test profile."))
+        parts.append(f"<h2>1. Throughput and users</h2><p class=\"note\">{e(tnote)}</p>{charts['throughput']}")
+    bp = ctx.get("bp")
+    perf_note = (f"The OBL benchmark is an average of {a.avg_ms:,.0f} ms per endpoint response. " +
+                 (f"Degradation point at about {bp['users']:,.0f} concurrent users: from there, an endpoint’s average "
+                  f"or the 5xx share stayed over the benchmark for {a.sustain} seconds or more." if bp else
+                  f"No degradation point: no endpoint’s average stayed above {a.avg_ms:,.0f} ms for {a.sustain} "
+                  "seconds or more."))
+    parts.append(f"<h2>2. Performance</h2><p class=\"note\">{e(perf_note)}</p>")
+    if charts.get("avg_time"):
+        parts.append("<h3>Average response time per endpoint over time</h3><p class=\"note\">10-second rolling "
+                     "average. The slowest four endpoints are shown separately; the rest as their mean.</p>"
+                     + charts["avg_time"])
+    parts.append("<h3>Average response time per endpoint</h3><p class=\"note\">Over the whole run, slowest first, "
+                 f"against the benchmark.</p>{charts['endpoints']}")
     if charts.get("latency"):
-        parts.append(f"<h2>Throughput and users</h2>{charts['throughput']}")
-        parts.append("<h2>Response time under load</h2><p class=\"note\">Rolling percentiles across all "
-                     f"endpoints. The {ctx['args'].avg_ms:,.0f} ms line is the OBL benchmark, which applies to averages."
-                     f"</p>{charts['latency']}")
-        parts.append(f"<h2>Error rate</h2>{charts['errors']}")
-    a = ctx["args"]
-    parts.append(f"<h2>Endpoints</h2><p class=\"note\">Sorted by average response time. An API endpoint passes when "
-                 f"its average is ≤ {a.avg_ms:,.0f} ms and 5xx responses are ≤ {a.max_5xx_pct:g}%. Token and settings "
-                 "lines are shown for information only.</p>"
-                 f"{charts['endpoints']}<div class=\"scroll\"><table><thead><tr><th>Endpoint</th><th>Area</th>"
-                 "<th>Requests</th><th>Average</th><th>p95</th><th>Max</th><th>5xx</th><th>All errors</th><th>Req/s</th>"
-                 f"<th>Status</th></tr></thead><tbody>{rows}</tbody></table></div>")
-    if fails:
-        parts.append("<h2>Failures</h2><div class=\"scroll\"><table><thead><tr><th>Endpoint</th>"
-                     f"<th>Error</th><th>Count</th></tr></thead><tbody>{fails}</tbody></table></div>")
+        parts.append("<h3>Response time percentiles</h3><p class=\"note\">For engineers: p50, p95 and p99 across all "
+                     "endpoints. Informational only; Locust rounds these (10 ms steps between 100 ms and 1 s).</p>"
+                     + charts["latency"])
+    parts.append("<h2>3. Error rate</h2><p class=\"note\">Only 5xx responses count towards the OBL benchmark. Other "
+                 "errors are shown separately so their cause is visible.</p>")
+    if charts.get("e5xx"):
+        parts.append(f"<h3>5xx errors</h3>{charts['e5xx']}")
+        parts.append("<h3>Other errors</h3><p class=\"note\">Every error that isn’t a 5xx, by type: 4xx responses, "
+                     "which OBL attributes to the TPP, and requests that got no reply. Shown so their cause is visible; "
+                     "they don’t count towards the error rate benchmark.</p>"
+                     + (charts.get("eother") or "<p class=\"note\">No other errors in this run.</p>"))
+    elif charts.get("errors"):
+        parts.append("<h3>All errors</h3><p class=\"note\">This run was recorded before errors were split by type, so "
+                     "5xx and other errors are shown together here; the error rate benchmark above counts 5xx only.</p>"
+                     + charts["errors"])
+    parts.append("<h3>Errors by type</h3><p class=\"note\">Every error the financial institution returned, grouped by "
+                 "type, with where and when it happened and an example message.</p>"
+                 "<div class=\"scroll\"><table><thead><tr><th class=\"l\">Type</th><th class=\"l\">Counts towards "
+                 "benchmark</th><th>Requests</th><th>Share</th><th class=\"l\">Where / when</th><th class=\"l\">"
+                 f"Example message</th></tr></thead><tbody>{et}</tbody></table></div>")
+    parts.append(f"<h2>4. Endpoints summary</h2><p class=\"note\">Sorted by average response time. An endpoint passes "
+                 f"when its average is ≤ {a.avg_ms:,.0f} ms and 5xx ≤ {a.max_5xx_pct:g}%. Token and settings lines "
+                 "are shown for information only.</p><div class=\"scroll\"><table><thead><tr><th class=\"l\">"
+                 "Endpoint</th><th>Requests</th><th>Average</th><th>p95</th><th>5xx</th><th>4xx</th><th>Status</th>"
+                 f"</tr></thead><tbody>{rows}</tbody></table></div>")
     parts.append(f"<footer>Generated {e(fmt_time(datetime.now(timezone.utc).timestamp()))} from "
                  f"{e(os.path.basename(ctx['prefix']))}_*.csv</footer></main>{PDF_JS}</body></html>")
     return "".join(parts)
@@ -535,19 +823,24 @@ def build_md(ctx):
     a = ctx["args"]
     lines = [f"# {ctx['title']}", "", f"**{ctx['verdict'][0]}.** {ctx['verdict'][1]}", ""]
     lines += [f"- {k}: {v}" for k, v in ctx["facts"]] + [""]
-    lines += [f"## Open Banking benchmarks ({OBL_REF})", "", "| Requirement | Benchmark | This run | Result |", "|---|---|---|---|"]
+    if ctx.get("callout_text"):
+        lines += [f"> {ctx['callout_text']}", ""]
+    lines += ["## Benchmarks", "", BENCH_NOTE, "", "| Requirement | Benchmark | This run | Result |", "|---|---|---|---|"]
     lines += [f"| {c['name']} | {c['target']} | {c['measured']} | "
-              f"{'➖ Not in scope' if c['ok'] is None else '✅ Met' if c['ok'] else '❌ Not met'} |" for c in ctx["checks"]]
-    lines += ["", "Availability is not in the scope of a stress test: it is measured over a longer period and should be "
-              "reported in a dedicated availability report covering at least three months (OBL measures it per quarter).", ""]
+              f"{'➖ ' + c.get('na', 'Not in scope') if c['ok'] is None else '✅ Met' if c['ok'] else '❌ Not met'} |"
+              for c in ctx["checks"]]
+    lines += [""]
     if ctx["notes"] and ctx["verdict"][0] != "Passed":
         lines += ["## What we found", ""] + [f"- {n}" for n in ctx["notes"]] + [""]
-    lines += [f"## Endpoints (average ≤ {a.avg_ms:,.0f} ms, 5xx ≤ {a.max_5xx_pct:g}%)", "",
-              "| Endpoint | Area | Requests | Average | p95 | 5xx | Status |",
-              "|---|---|---:|---:|---:|---:|---|"]
-    lines += [f"| {label(x)} | {x.get('area', '')} | {x['count']:,} | {fmt_ms(x['avg'])} | {fmt_ms(x['p95'])} | "
-              f"{x.get('n5xx', 0):,} | {('✅' if x['ok'] else '❌') if is_api(x) else '–'} |"
-              for x in ctx["endpoints"]]
+    lines += ["## Errors by type", "", "| Type | Counts towards benchmark | Requests | Share | Where / when |",
+              "|---|---|---:|---:|---|"]
+    lines += [f"| {r['label']} | {'Yes' if r['counts'] else 'No'} | {r['count']:,} | {r['share']:.2f}% | "
+              f"{r['where'] or '–'}{('; ' + r['when']) if r['when'] else ''} |" for r in ctx["error_types"]]
+    lines += ["", f"## Endpoints summary (average ≤ {a.avg_ms:,.0f} ms, 5xx ≤ {a.max_5xx_pct:g}%)", "",
+              "| Endpoint | Requests | Average | p95 | 5xx | 4xx | Status |",
+              "|---|---:|---:|---:|---:|---:|---|"]
+    lines += [f"| {label(x)} | {x['count']:,} | {fmt_ms(x['avg'])} | {fmt_ms(x['p95'])} | {x.get('n5xx', 0):,} | "
+              f"{x.get('n4xx', 0):,} | {('✅' if x['ok'] else '❌') if is_api(x) else '–'} |" for x in ctx["endpoints"]]
     return "\n".join(lines) + "\n"
 
 
@@ -584,20 +877,27 @@ def main():
                 run_ctx = json.load(fh)
         except ValueError:
             run_ctx = {}
-    assess = obl_assessment(endpoints, total, hist, failures, args)
+    tl = load_timeline(args.prefix)
+    assess = obl_assessment(endpoints, total, hist, failures, args, run_ctx)
     endpoints.sort(key=lambda e: (not is_api(e), -(e["avg"] or 0)))
     failures.sort(key=lambda f: num(f.get("Occurrences")) or 0, reverse=True)
-    # informational: load at which the median went over the benchmark or errors climbed, for 30 s or more
-    bp, _ = find_breaking_point(hist, args.avg_ms, args.max_5xx_pct, args.sustain, args.warmup, key="p50")
+    # degradation point: same rules as the verdict (endpoint average over the benchmark, or 5xx over 0.5%)
+    if tl and hist:
+        bp = degradation_from_timeline(tl, hist, args)
+    else:
+        bp, _ = find_breaking_point(hist, args.avg_ms, args.max_5xx_pct, args.sustain, args.warmup, key="p50")
+    target = assess["target"]
 
     facts = []
     if hist:
         facts += [("Started", fmt_time(hist[0]["ts"])),
                   ("Duration", fmt_duration(hist[-1]["ts"] - hist[0]["ts"])),
-                  ("Peak users", f"{max(h['users'] for h in hist):,.0f}"),
-                  ("Peak throughput", f"{max(h['rps'] for h in hist):,.1f} req/s")]
+                  ("Peak users", f"{assess['peak_users']:,.0f}")]
+        if assess["sustained"] is not None:
+            facts.append(("Sustained throughput", f"{assess['sustained']:,.1f} req/s"))
+    if target:
+        facts.append(("Throughput target", f"{target['value']:g} req/s"))
     facts += [("Total requests", f"{total['count']:,}"),
-              ("Average throughput", f"{(total['rps'] or 0):,.1f} req/s"),
               ("Average response", fmt_ms(total["avg"])),
               ("5xx error rate", f"{assess['pct5xx']:.2f}%")]
     if bp:
@@ -605,11 +905,26 @@ def main():
     if exceptions:
         facts.append(("Script exceptions", f"{sum(int(num(x.get('Count')) or 0) for x in exceptions):,}"))
 
+    error_types = errors_by_type(tl, failures, hist, assess["requests"])
+    other = [r for r in error_types if not r["counts"] and r["count"]]
+    other_share = sum(r["share"] for r in other)
+    callout = callout_text = ""
+    if other_share >= 1.0:
+        top = max(other, key=lambda r: r["count"])
+        callout_text = (f"Not counted towards the verdict: {other_share:.1f}% of requests got an error other than 5xx, "
+                        f"mostly {top['label']}" + (f", {top['when']}" if top["when"] else "") + ". See 3. Error rate.")
+        callout = (f"<b>Not counted towards the verdict:</b> {other_share:.1f}% of requests got an error other than 5xx, "
+                   f"mostly <b>{html.escape(top['label'])}</b>" + (f", {html.escape(top['when'])}" if top["when"] else "")
+                   + ". See <i>3. Error rate</i>.")
+
     charts = {"endpoints": chart_endpoints([e for e in endpoints if is_api(e)], args.avg_ms)}
     if len(hist) > 1:
-        charts.update(latency=chart_latency(hist, bp, args.avg_ms),
-                      throughput=chart_throughput(hist, bp),
-                      errors=chart_errors(hist, bp, args.max_5xx_pct))
+        charts.update(throughput=chart_throughput(hist, bp, target), latency=chart_latency(hist, bp))
+        if tl:
+            charts.update(avg_time=chart_avg_over_time(tl, args.avg_ms, bp["ts"] if bp else None),
+                          e5xx=chart_5xx(tl, args.max_5xx_pct), eother=chart_other_errors(tl))
+        else:
+            charts.update(errors=chart_errors(hist, bp, args.max_5xx_pct))
     else:
         print("Note: no usable _stats_history.csv, so time-series charts are skipped.")
 
@@ -617,10 +932,11 @@ def main():
         "args": args, "prefix": args.prefix, "title": args.title,
         "subtitle": (" · ".join(x for x in (run_ctx.get("tenant"), run_ctx.get("profile")) if x) if run_ctx else
                      " – ".join(x for x in (args.env, args.target) if x) or "Locust run"),
-        "run_ctx": run_ctx,
+        "run_ctx": run_ctx, "target": target, "bp": bp,
         "verdict": verdict_text(assess, total, hist, bp, args), "checks": assess["checks"],
         "facts": facts, "notes": assess["findings"] + ([f"Performance started to degrade at about {bp['users']:,.0f} concurrent users."] if bp else []),
-        "endpoints": endpoints, "failures": failures, "charts": charts,
+        "endpoints": endpoints, "failures": failures, "charts": charts, "error_types": error_types,
+        "callout": callout, "callout_text": callout_text,
     }
     out_html = args.out or f"{args.prefix}_report.html"
     out_md = os.path.splitext(out_html)[0].removesuffix("_report") + "_summary.md"

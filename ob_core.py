@@ -97,8 +97,10 @@ STEPS = [
                                                   "the following steps build on it. Set it up once; test profiles reuse it."},
     {"id": "addresses", "title": "URLs", "intro": "Pre-filled from the discovery document. "
                                                    "Change anything that doesn't match your environment."},
-    {"id": "certificates", "title": "Certificates", "intro": "Uploaded files are checked straight away and stored "
-                                                              "for this tenant only."},
+    {"id": "certificates", "title": "Certificates", "intro": "How the financial institution's server certificates are "
+                                                              "checked, and your own certificates and keys. Uploaded "
+                                                              "files are checked straight away and stored for this "
+                                                              "tenant profile only."},
     {"id": "capabilities", "title": "Supported APIs", "intro": "The API areas this financial institution offers and the "
                                                                 "version of the UK Open Banking standard it implements."},
     {"id": "AIS", "title": "AIS APIs", "intro": "The account information endpoints this financial institution supports.", "area": "AIS"},
@@ -111,11 +113,6 @@ SCHEMA = [
     F("name", "tenant", "text", "Tenant name", "", "For your reference, e.g. financial institution and environment."),
     F("well_known", "tenant", "text", "OpenID discovery URL", os.getenv("OB_WELL_KNOWN", ""),
       "Ends in /.well-known/openid-configuration.", wide=True),
-    F("ca_check", "tenant", "choice", "TLS certificate verification", CA_CHOICES[0],
-      "Choose 'Accept self-signed certificates' when the financial institution's servers use certificates that "
-      "can't be traced to a publicly trusted root CA.", choices=CA_CHOICES),
-    F("ca_file", "tenant", "file", "CA file", "", "The financial institution's CA chain (PEM).",
-      show={"ca_check": CA_CHOICES[2]}),
 
     F("rs_host", "addresses", "text", "Resource server", os.getenv("OB_RS_HOST", ""),
       "Base URL of the financial institution's APIs. Not in the discovery document: suggested from its address.",
@@ -135,6 +132,11 @@ SCHEMA = [
       "(…/ob-callback) to capture approvals automatically; it must be registered for your client.", wide=True),
     F("response_type", "addresses", "choice", "Response type", "code id_token", choices=["code id_token", "code"]),
 
+    F("ca_check", "certificates", "choice", "TLS certificate verification", CA_CHOICES[0],
+      "How this tool checks the financial institution's server certificates. Choose 'Accept self-signed "
+      "certificates' when they can't be traced to a publicly trusted root CA.", choices=CA_CHOICES),
+    F("ca_file", "certificates", "file", "CA file", "", "The financial institution's CA chain (PEM).",
+      show={"ca_check": CA_CHOICES[2]}),
     F("mtls_cert", "certificates", "file", "Transport certificate", "", "PEM. Leave empty if the financial institution doesn't use mTLS."),
     F("mtls_key", "certificates", "file", "Transport key", ""),
     F("signing_key", "certificates", "file", "Signing key", "", "Signs request objects and payment requests."),
@@ -312,7 +314,7 @@ def validate_tenant(t):
     if t.get("client_auth") in ("client_secret_basic", "client_secret_post") and not t.get("client_secret"):
         issues.append("Client secret is empty (URLs).")
     if ca_mode(t.get("ca_check")) == CA_CHOICES[2] and not t.get("ca_file"):
-        issues.append("CA file not uploaded (Tenant).")
+        issues.append("CA file not uploaded (Certificates).")
     return issues
 
 
@@ -476,7 +478,7 @@ def fetch_discovery(url, ca_check="", ca_file=""):
     except requests.exceptions.SSLError as e:
         raise ValueError(f"The server's certificate couldn't be verified ({str(e)[:120]}). If the financial institution "
                          "uses self-signed certificates, set 'TLS certificate verification' to 'Accept self-signed "
-                         "certificates', or upload its CA file.")
+                         "certificates' (Certificates step), or upload its CA file there.")
     except requests.RequestException as e:
         raise ValueError(f"Could not reach the discovery URL: {str(e)[:160]}")
     if r.status_code != 200:
@@ -763,6 +765,13 @@ PROFILE_SCHEMA = [
     F("spawn_rate", "load", "number", "Ramp up (users started per second)", "2", "e.g. 2 = all 20 users running after 10 s."),
     F("user_tps", "load", "number", "Requests per second per user", os.getenv("OB_USER_TPS", "2"),
       "0 = random 1–3 s pauses. All three can still be changed on Locust's start page."),
+    F("run_time", "load", "text", "Run time", "10m",
+      "How long the test runs, e.g. 30s, 10m, 1h30m. Leave empty to run until you press Stop."),
+    F("peak_rps", "load", "number", "Peak-hour requests per second in the existing digital channel", "",
+      "Optional. How many requests per second the existing digital channel (PSU interface) handles in its busiest "
+      "hour. With the stress factor it sets the throughput target the report checks."),
+    F("stress_factor", "load", "number", "Stress factor", "2",
+      "Throughput target = peak-hour requests per second × stress factor. 2 adds the stress element."),
     F("mix_ais", "load", "number", "AIS share of users (%)", "60", show_multi=True),
     F("mix_pis", "load", "number", "PIS share of users (%)", "30", show_multi=True),
     F("mix_cof", "load", "number", "CoF share of users (%)", "10", show_multi=True),
@@ -876,6 +885,8 @@ def list_profiles():
         out.append({"id": pid, "name": p.get("name") or pid, "tenant": p.get("tenant"), "tenant_name": t.get("name", "(deleted)"),
                     "rs_host": t.get("rs_host", ""), "version": t.get("version", ""), "areas": areas,
                     "users": p.get("users", "20"), "spawn_rate": p.get("spawn_rate", "2"), "user_tps": p.get("user_tps", "2"),
+                    "run_time": p.get("run_time", ""), "peak_rps": p.get("peak_rps", ""),
+                    "stress_factor": p.get("stress_factor", "2"),
                     "issues": issues, "ready": not issues,
                     "tokens": {a: len(tk.get(a.lower(), [])) for a in AREAS},
                     "sources": {a: p.get(a.lower() + "_source", MANUAL) for a in AREAS},
@@ -952,9 +963,31 @@ def get_run(pid):
     return run
 
 
+RUN_TIME = re.compile(r"^\s*(\d+\s*$|(\d+h)?\s*(\d+m)?\s*(\d+s)?\s*$)", re.I)
+
+
+def run_time_seconds(text):
+    """'1h30m' -> 5400, '90' -> 90, '' -> None. Raises ValueError for anything else."""
+    text = (text or "").strip().lower()
+    if not text:
+        return None
+    if not RUN_TIME.match(text) or not re.search(r"\d", text):
+        raise ValueError(f"Run time '{text}' isn't valid: use e.g. 30s, 10m or 1h30m (Load).")
+    if text.isdigit():
+        return int(text)
+    total = 0
+    for value, unit in re.findall(r"(\d+)([hms])", text):
+        total += int(value) * {"h": 3600, "m": 60, "s": 1}[unit]
+    return total
+
+
 def validate_profile(run):
     """Everything still missing before this profile can run, tenant problems included."""
     issues = [f"Tenant profile: {i}" for i in validate_tenant(get_tenant(run["tenant_id"]))]
+    try:
+        run_time_seconds(run.get("run_time"))
+    except ValueError as e:
+        issues.append(str(e))
     areas = [a for a in AREAS if run.get("test_" + a.lower()) == "Yes"]
     if not areas:
         issues.append("No area selected that the tenant profile supports (Scope).")
@@ -1197,7 +1230,13 @@ def run_context(run, run_id):
             ("Pushed authorisation (PAR) endpoint", d.get("pushed_authorization_request_endpoint")),
             ("Keys (JWKS)", d.get("jwks_uri")),
             ("Resource server", run.get("rs_host"))]
+    def _num(v):
+        try:
+            return float(v) if str(v).strip() else None
+        except ValueError:
+            return None
     return {"run_id": run_id, "tenant": run.get("tenant_name"), "profile": run.get("profile_name"),
+            "peak_rps": _num(run.get("peak_rps")), "stress_factor": _num(run.get("stress_factor")) or 2.0,
             "standard": f"UK Open Banking v{run.get('version', '')}",
             "areas": [a for a in AREAS if run.get("test_" + a.lower()) == "Yes"],
             "urls": [{"label": k, "url": v} for k, v in urls if v]}
