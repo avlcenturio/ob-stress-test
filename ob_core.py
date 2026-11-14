@@ -931,6 +931,10 @@ PROFILE_SCHEMA = [
       "0 = random 1–3 s pauses. All three can still be changed on Locust's start page."),
     F("run_time", "load", "text", "Run time", "10m",
       "How long the test runs, e.g. 30s, 10m, 1h30m. Leave empty to run until you press Stop."),
+    F("pis_submit_mode", "load", "choice", "Payment submissions", "At the start, as fast as possible",
+      "Each authorised payment consent is submitted once. At the start: all payments first, then the full load goes "
+      "to the other endpoints (stress tests). Spread: evenly over the run time (long runs).",
+      choices=["At the start, as fast as possible", "Spread over the run time"], show_pis=True),
     F("peak_rps", "load", "number", "Peak-hour requests per second in the existing digital channel", "",
       "Optional. How many requests per second the existing digital channel (PSU interface) handles in its busiest "
       "hour. With the stress factor it sets the throughput target the report checks."),
@@ -1074,6 +1078,20 @@ def _migrate_profiles():
     return data
 
 
+def _pis_submits(p, pid):
+    """How many authorised payment consents this profile will submit (each once)."""
+    ticked = {k.split(":")[0] for k in migrate_pis_keys(p.get("pis_tests")).split(",") if k.endswith(":submit")}
+    if p.get("pis_source") == FLOW:
+        entries = load_tokens().get(pid, {}).get("pis", [])
+        return sum(1 for e in entries if e.get("ptype", "domestic") in ticked)
+    n = 0
+    for line in (p.get("pisp_authorised") or "").splitlines():
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) >= 2 and parts[0] and parts[1]:
+            n += (parts[2] if len(parts) > 2 and parts[2] in PAYMENT_TYPES else "domestic") in ticked
+    return n
+
+
 def list_profiles():
     tenants = {t["id"]: t for t in list_tenants()}
     runs_by_profile = {}
@@ -1094,6 +1112,8 @@ def list_profiles():
                     "rs_host": t.get("rs_host", ""), "version": t.get("version", ""), "areas": areas,
                     "users": p.get("users", "20"), "spawn_rate": p.get("spawn_rate", "2"), "user_tps": p.get("user_tps", "2"),
                     "run_time": p.get("run_time", ""), "peak_rps": p.get("peak_rps", ""),
+                    "pis_submit_mode": p.get("pis_submit_mode") or "At the start, as fast as possible",
+                    "pis_submits": _pis_submits(p, pid) if "PIS" in areas else 0,
                     "stress_factor": p.get("stress_factor", "2"),
                     "issues": issues, "ready": not issues,
                     "tokens": {a: len(tk.get(a.lower(), [])) for a in AREAS},

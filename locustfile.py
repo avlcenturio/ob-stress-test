@@ -197,6 +197,12 @@ def configure(environment):
     n = len(c.pis["to_submit"])
     run_s = getattr(environment.parsed_options, "run_time", None) if environment.parsed_options else None
     window = (run_s * 0.9) if run_s else 60.0       # spread over the run (or the first minute)
+    c.pis["asap"] = (t.get("pis_submit_mode") or "At the start").startswith("At the start")
+    if c.pis["asap"] and c.pis["to_submit"] and any(k.endswith(":funds-check") for k in pis_keys):
+        c.pis["notices_due"] = c.pis.get("notices_due", []) + [
+            "PIS: funds checks only work before a consent's payment is submitted. With payment submissions at the start, "
+            "every consent is used straight away, so funds checks only run for consents that aren't submitted "
+            "(e.g. of a payment type whose submission isn't ticked). Choose 'Spread over the run time' to include them."]
     c.pis["interval"] = window / n if n else None
     for ptype in c.pis_types:      # reads of payments that this run never submits
         reads = [k for k in pis_keys if k.startswith(ptype + ":") and k.split(":")[1] in
@@ -479,7 +485,9 @@ class OpenBankingUser(HttpUser):
             self.pis_notice(message)
         item = None
         with _lock:
-            if P["to_submit"] and P["interval"] and time.time() >= P["next_due"]:
+            if P["to_submit"] and P["asap"]:            # stress: all payments first, as fast as the load allows
+                item = P["to_submit"].popleft()
+            elif P["to_submit"] and P["interval"] and time.time() >= P["next_due"]:
                 item = P["to_submit"].popleft()
                 P["next_due"] += P["interval"]
         if item:

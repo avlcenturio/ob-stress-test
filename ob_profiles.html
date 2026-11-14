@@ -405,7 +405,7 @@ function stepContent(step) {
   }
   if (step.id === "load") {
     const multi = areasOn().length > 1;
-    const f = fieldsOf("load", x => !x.show_multi);
+    const f = fieldsOf("load", x => !x.show_multi && !(x.show_pis && !areasOn().includes("PIS")));
     const mix = fieldsOf("load", x => x.show_multi && multi && areasOn().includes({mix_ais: "AIS", mix_pis: "PIS", mix_cof: "CoF"}[x.key]));
     const card = el("section", {class: "card"}, el("h2", {}, "Load"), el("div", {class: "grid"}, f.map(fieldNode)),
       el("div", {class: "total"}, el("b", {id: "totalRps"}), el("span", {id: "totalNote"})));
@@ -480,7 +480,8 @@ function flowPanel(area) {
   const t = P.tokens || {pending: [], AIS: [], PIS: [], CoF: []};
   const pend = t.pending.filter(p => p.area === area), ready = t[area] || [];
   const kind = {AIS: "account access", PIS: "payment", CoF: "funds confirmation"}[area];
-  const auto = P.tenant && P.tenant.redirect_uri === META.callback;
+  const local = u => (u || "").replace(/^(https?:\/\/)(localhost|127\.0\.0\.1|0\.0\.0\.0)(?=[:\/])/, "$1localhost");
+  const auto = P.tenant && local(P.tenant.redirect_uri) === local(META.callback);
   const pasteRow = p => {
     const inp = el("input", {type: "text", placeholder: "Paste the redirect URL, or just the authorisation code", style: "flex:1;min-width:260px"});
     return el("tr", {class: "pasterow"}, el("td", {colspan: 4}, el("div", {class: "row"}, inp,

@@ -193,6 +193,20 @@ LOCUST_JS = """
     if (/^\\d+$/.test(v)) return v + ' s';
     return v.replace(/(\\d+)h/, '$1 h ').replace(/(\\d+)m/, '$1 min ').replace(/(\\d+)s/, '$1 s').trim();
   }
+  function runSeconds(v) {
+    v = (v || '').trim().toLowerCase();
+    if (!v) return 0;
+    if (/^\\d+$/.test(v)) return parseInt(v);
+    var s = 0, m, re = /(\\d+)([hms])/g;
+    while ((m = re.exec(v))) s += parseInt(m[1]) * {h: 3600, m: 60, s: 1}[m[2]];
+    return s;
+  }
+  function humanSecs(s) {
+    s = Math.round(s);
+    if (s < 60) return s + ' s';
+    var mm = Math.floor(s / 60), ss = s % 60;
+    return mm + ' min' + (ss ? ' ' + ss + ' s' : '');
+  }
   function summary(form, after, t) {
     var s = form.querySelector('#ob-summary');
     if (!s) { s = document.createElement('div'); s.id = 'ob-summary'; after.after(s); }
@@ -202,6 +216,16 @@ LOCUST_JS = """
                 ['Requests per second', r > 0 ? r + ' per user, ≈ ' + Math.round(u * r * 10) / 10 + ' in total' : 'users pause 1–3 s between requests'],
                 ['Run time', humanTime(t.run_time)]];
     if (peak > 0) rows.push(['Throughput target', Math.round(peak * factor * 10) / 10 + ' req/s (peak ' + peak + ' × ' + factor + ')']);
+    var n = parseInt(t.pis_submits) || 0;
+    if (n > 0) {
+      if ((t.pis_submit_mode || '').indexOf('Spread') === 0) {
+        var secs = runSeconds(t.run_time), every = (secs ? secs * 0.9 : 60) / n;
+        rows.push(['Payments', n + ' submission' + (n === 1 ? '' : 's') + ', spread: first after ~' + humanSecs(every / 2) +
+                   (n > 1 ? ', then every ' + humanSecs(every) : '')]);
+      } else {
+        rows.push(['Payments', n + ' submission' + (n === 1 ? '' : 's') + ' at the start, as fast as the load allows; then the full load on the other endpoints']);
+      }
+    }
     rows.push(['Host', t.rs_host || '–']);
     s.innerHTML = '';
     var dl = document.createElement('dl');

@@ -122,7 +122,7 @@ profile and holds everything that changes from test to test.
 |---|---|
 | **1. Profile** | Name and tenant profile |
 | **2. Scope** | The areas to test (only those the tenant profile supports) and, for each, the APIs to call with their weights |
-| **3. Load** | Users, ramp up, requests per second per user (the total is shown live), run time (e.g. 10m, 1h30m; empty = until Stop), peak-hour requests per second of the existing digital channel and the stress factor (the throughput target is shown live), mix of users between areas |
+| **3. Load** | Users, ramp up, requests per second per user (the total is shown live), run time (e.g. 10m, 1h30m; empty = until Stop), payment submissions (at the start or spread), peak-hour requests per second of the existing digital channel and the stress factor (the throughput target is shown live), mix of users between areas |
 | **4. AIS / PIS / CoF tokens** | How tokens are supplied, plus the test data |
 | **5. Review and save** | Summary and anything still missing |
 
@@ -146,8 +146,14 @@ All UK Open Banking payment types except VRP: domestic, domestic scheduled, dome
 orders, international, international scheduled, international standing orders and file payments.
 
 - **Submitting a payment happens exactly once per authorised consent** (that's how payment consents
-  work), so it has no weight: submissions are spread evenly over the run time (over the first minute
-  if no run time is set).
+  work), so it has no weight. *Load → Payment submissions* chooses when:
+  - **At the start, as fast as possible** (default, for stress tests): all payments are submitted
+    first, then the full load goes to the other endpoints.
+  - **Spread over the run time** (for long runs): evenly over the run (over the first minute if no
+    run time is set).
+
+  The start page summary shows what will happen, e.g. *3 submissions at the start*. Funds checks only
+  work before a consent's payment is submitted, so with *At the start* they stop almost immediately.
 - **Everything else is repeatable and shares the remaining requests per second by weight:** creating
   consents, reading consents and payment files, funds checks (until the consent's payment is
   submitted), reading payments and standing orders, payment details and report files.
