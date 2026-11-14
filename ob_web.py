@@ -178,7 +178,8 @@ def register(app, environment):
     def ob_profile_consents(pid):
         body = request.get_json(force=True) or {}
         try:
-            created = core.create_consents(pid, body.get("area", "AIS"), body.get("count", 1), body.get("ptype"))
+            created = core.create_consents(pid, body.get("area", "AIS"), body.get("count", 1), body.get("ptype"),
+                                           body.get("role") or "payment")
         except Exception as e:  # noqa: BLE001
             return fail(e)
         return ok(created=created, tokens=core.token_overview(pid))
@@ -187,7 +188,10 @@ def register(app, environment):
     def ob_profile_tokens(pid):
         if request.method == "POST":
             body = request.get_json(force=True) or {}
-            core.remove_tokens(pid, body.get("area"), body.get("consent_id"))
+            if body.get("role"):
+                core.set_consent_role(pid, body.get("consent_id"), body["role"])
+            else:
+                core.remove_tokens(pid, body.get("area"), body.get("consent_id"))
         return ok(tokens=core.token_overview(pid))
 
     @app.route("/ob-profiles/api/profiles/<pid>/export")

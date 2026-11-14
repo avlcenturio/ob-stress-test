@@ -959,9 +959,10 @@ PROFILE_SCHEMA = [
     F("pisp_cc_token", "PIS", "secret", "Client-credentials token", os.getenv("OB_PISP_CC_TOKEN", ""),
       "Creates and reads payment consents.", show={"pis_source": MANUAL}),
     F("pisp_authorised", "PIS", "textarea", "Authorised payment consents", "",
-      "Lines of ConsentId,AccessToken,type. Type is optional (domestic if left out): domestic, domestic-scheduled, "
-      "domestic-standing-order, international, international-scheduled, international-standing-order or file. "
-      "Each consent is submitted once as a payment.", show={"pis_source": MANUAL}),
+      "Lines of ConsentId,AccessToken,type,purpose. Type is optional (domestic if left out): domestic, "
+      "domestic-scheduled, domestic-standing-order, international, international-scheduled, "
+      "international-standing-order or file. Purpose is optional: payment (submitted once, the default) or checks "
+      "(kept for funds checks, never submitted).", show={"pis_source": MANUAL}),
     F("amount", "PIS", "text", "Amount", os.getenv("OB_PAYMENT_AMOUNT", "1.00"), testdata=True, data_for=["*:consent-create", "*:submit"]),
     F("currency", "PIS", "text", "Currency", os.getenv("OB_PAYMENT_CURRENCY", "GBP"), testdata=True, data_for=["*:consent-create", "*:submit"]),
     F("creditor_name", "PIS", "text", "Payee name", os.getenv("OB_CREDITOR_NAME", "Load Test Payee"), testdata=True, data_for=["*:consent-create", "*:submit"]),
@@ -1078,18 +1079,23 @@ def _migrate_profiles():
     return data
 
 
-def _pis_submits(p, pid):
-    """How many authorised payment consents this profile will submit (each once)."""
-    ticked = {k.split(":")[0] for k in migrate_pis_keys(p.get("pis_tests")).split(",") if k.endswith(":submit")}
+def pis_consents(p, pid):
+    """[(ptype, role)] for the profile's authorised payment consents."""
     if p.get("pis_source") == FLOW:
-        entries = load_tokens().get(pid, {}).get("pis", [])
-        return sum(1 for e in entries if e.get("ptype", "domestic") in ticked)
-    n = 0
+        return [(e.get("ptype", "domestic"), e.get("role", "payment")) for e in load_tokens().get(pid, {}).get("pis", [])]
+    out = []
     for line in (p.get("pisp_authorised") or "").splitlines():
         parts = [x.strip() for x in line.split(",")]
         if len(parts) >= 2 and parts[0] and parts[1]:
-            n += (parts[2] if len(parts) > 2 and parts[2] in PAYMENT_TYPES else "domestic") in ticked
-    return n
+            ptype = parts[2] if len(parts) > 2 and parts[2] in PAYMENT_TYPES else "domestic"
+            out.append((ptype, "checks" if len(parts) > 3 and parts[3].lower().startswith("check") else "payment"))
+    return out
+
+
+def _pis_submits(p, pid):
+    """How many authorised payment consents this profile will submit (each once)."""
+    ticked = {k.split(":")[0] for k in migrate_pis_keys(p.get("pis_tests")).split(",") if k.endswith(":submit")}
+    return sum(1 for t, role in pis_consents(p, pid) if t in ticked and role == "payment")
 
 
 def list_profiles():
@@ -1233,6 +1239,23 @@ def validate_profile(run):
             issues.append("AIS: no authorised consent yet.")
     if "PIS" in areas and run.get("pis_source") == MANUAL and not run.get("pisp_cc_token"):
         issues.append("PIS: no client-credentials token.")
+    if "PIS" in areas:
+        keys = set((run.get("pis_endpoints") or "").split(","))
+        have = pis_consents(run, run["_id"])
+        for ptype, info in PAYMENT_TYPES.items():
+            checks = f"{ptype}:funds-check" in keys
+            submit = f"{ptype}:submit" in keys
+            n_pay = sum(1 for t, r in have if t == ptype and r == "payment")
+            n_chk = sum(1 for t, r in have if t == ptype and r == "checks")
+            name = info["short"]
+            if checks and submit and (n_pay < 1 or n_chk < 1):
+                issues.append(f"PIS {name}: funds checks and payments are both ticked, so at least 2 consents are needed: "
+                              f"1 for funds checks and 1 for payment (you have {n_chk} for funds checks, {n_pay} for "
+                              "payment).")
+            elif submit and not checks and n_pay < 1:
+                issues.append(f"PIS {name}: payment submission is ticked but there's no consent for payment.")
+            elif checks and not submit and n_pay + n_chk < 1:
+                issues.append(f"PIS {name}: funds checks are ticked but there's no authorised consent.")
     if "CoF" in areas:
         eps = run.get("cof_endpoints", "").split(",")
         if "confirm" in eps and run.get("cof_source") == MANUAL and not (run.get("cof_token") and run.get("cof_consent_id")):
@@ -1286,7 +1309,10 @@ def tenant_tokens(pid):  # kept name: tokens now belong to a test profile
     return {"ais": t.get("ais", []), "pis": t.get("pis", []), "cof": t.get("cof", []), "pending": t.get("pending", {})}
 
 
-def create_consents(pid, area, count, ptype=None):
+PIS_ROLES = ("payment", "checks")   # submitted once as a payment / kept for funds checks (never submitted)
+
+
+def create_consents(pid, area, count, ptype=None, role="payment"):
     """Create consents with a client-credentials token and return their authorisation links.
     For PIS, ptype is the payment type; file payments also get their payment file uploaded."""
     run = get_run(pid)
@@ -1325,9 +1351,13 @@ def create_consents(pid, area, count, ptype=None):
             if fr.status_code not in (200, 201, 204):
                 raise FlowError(f"Uploading the payment file failed ({fr.status_code}): {fr.text[:300]}")
         link, state, nonce = auth.authorise_url(consent_id, area)
+        extra_info = {}
+        if area == "PIS":   # kept so the payment can be submitted without reading the consent back
+            extra_info = {"ptype": ptype, "role": role if role in PIS_ROLES else "payment",
+                          "initiation": body["Data"].get("Initiation"), "risk": body.get("Risk", {})}
         update_tokens(lambda s: _tok(s, pid)["pending"].__setitem__(state, {
             "area": area, "consent_id": consent_id, "nonce": nonce, "created": time.time(), "url": link,
-            **({"ptype": ptype} if area == "PIS" else {})}))
+            **extra_info}))
         created.append({"consent_id": consent_id, "state": state, "url": link, **({"ptype": ptype} if ptype else {})})
     return created
 
@@ -1362,7 +1392,7 @@ def complete_authorisation(redirected_url, state_hint=None):
     pid, p = match[0]
     tok = AuthClient(get_run(pid)).exchange_code(code)
     entry = {"consent_id": p["consent_id"], "access_token": tok["access_token"],
-             **({"ptype": p["ptype"]} if p.get("ptype") else {}),
+             **{k: p[k] for k in ("ptype", "role", "initiation", "risk") if p.get(k) is not None},
              "refresh_token": tok.get("refresh_token", ""), "expires_at": tok["expires_at"], "created": time.time()}
     area = p.get("area") or KIND.get(p.get("kind", "ais"), "AIS")
 
@@ -1378,11 +1408,23 @@ def complete_authorisation(redirected_url, state_hint=None):
 def token_overview(pid):
     t, now = tenant_tokens(pid), time.time()
     view = lambda e: {"consent_id": e["consent_id"], "expires_in": int(e.get("expires_at", 0) - now),
-                      "refresh": bool(e.get("refresh_token")), "ptype": e.get("ptype", "domestic")}
+                      "refresh": bool(e.get("refresh_token")), "ptype": e.get("ptype", "domestic"),
+                      "role": e.get("role", "payment")}
     return {"AIS": [view(e) for e in t["ais"]], "PIS": [view(e) for e in t["pis"]], "CoF": [view(e) for e in t["cof"]],
             "pending": [{"state": k, "area": v.get("area") or KIND.get(v.get("kind", "ais"), "AIS"),
-                         "consent_id": v["consent_id"], "url": v["url"], "ptype": v.get("ptype", "")}
+                         "consent_id": v["consent_id"], "url": v["url"], "ptype": v.get("ptype", ""),
+                         "role": v.get("role", "")}
                         for k, v in t["pending"].items()]}
+
+
+def set_consent_role(pid, consent_id, role):
+    if role not in PIS_ROLES:
+        raise ValueError("Unknown purpose")
+    def put(s):
+        for e in _tok(s, pid)["pis"]:
+            if e["consent_id"] == consent_id:
+                e["role"] = role
+    update_tokens(put)
 
 
 def remove_tokens(pid, area, consent_id=None):

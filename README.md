@@ -159,8 +159,17 @@ orders, international, international scheduled, international standing orders an
   submitted), reading payments and standing orders, payment details and report files.
 - Calls that can't run yet (e.g. reading payments before the first submission) give their share to
   the others; if nothing can run, the test records a notice explaining why instead of going quiet.
-- **Consents:** in *PIS tokens*, choose the payment type next to *Create*. Pasted consents use lines of
-  `ConsentId,AccessToken,type` (type optional, domestic by default).
+- **Consents and their purpose:** in *PIS tokens*, choose the payment type and what each consent is
+  for next to *Create*: **payment** (submitted once) or **funds checks** (kept for funds checks, never
+  submitted); the purpose can be changed per consent later. When a payment type has both funds checks
+  and submission ticked, the profile needs **at least 2 consents: 1 for funds checks and 1 for
+  payment**, so funds checks keep running for the whole test. Pasted consents use lines of
+  `ConsentId,AccessToken,type,purpose` (type and purpose optional: domestic, payment).
+- Consents created in the tool keep their payment details, so a payment is submitted without reading
+  the consent first. Pasted consents need that read; it shows as
+  *GET …-consents/[id] (read before submitting)*.
+- Notices about the run (e.g. calls that can't run yet) appear in Locust's **Logs** tab and under
+  *Notes from the run* in the report, not as failed requests.
 - **Request templates:** each payment type has an editable JSON template for its consent request,
   pre-filled for UK OB v3.1 or v4.0, with placeholders such as `{{Amount}}`, `{{CreditorId}}`,
   `{{ExecutionDateTime}}`, `{{Frequency}}` and `{{IntlCurrency}}`. Edit one only if your financial

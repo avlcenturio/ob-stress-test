@@ -298,7 +298,8 @@ def load_timeline(prefix):
     wait_ms = [by[s][4][1] if s in by and len(by[s]) > 4 else 0 for s in span]
     rtt = [x for x in (data.get("rtt") or []) if x[1] is not None]
     return {"t0": t0, "ts": span, "n": n, "err": err, "ep": ep, "errors": data.get("errors") or {},
-            "phases": data.get("phases") or {}, "rtt": rtt, "wait_n": wait_n, "wait_ms": wait_ms}
+            "phases": data.get("phases") or {}, "rtt": rtt, "wait_n": wait_n, "wait_ms": wait_ms,
+            "notices": data.get("notices") or []}
 
 
 def median_rtt(tl):
@@ -371,7 +372,7 @@ def chart_avg_over_time(tl, slo, bp_ts=None, top=4):
     colours = [C_P95, C_P99, C_P50, "#8c6bc2"]
     fig, ax = plt.subplots(figsize=(9, 3.6))
     for name, col in zip(ranked[:top], colours):
-        ax.plot(x, tl_avg(tl, name), color=col, lw=1.5, label=name.split(" ", 1)[-1])
+        ax.plot(x, tl_avg(tl, name), color=col, lw=1.5, label=name)
     rest = ranked[top:]
     if rest:
         series = [tl_avg(tl, k) for k in rest]
@@ -429,7 +430,7 @@ def chart_time_split(split, slo):
              ("server", "Server processing (estimated)", C_P95), ("download", "Download", C_P99)]
     fig, ax = plt.subplots(figsize=(9, 0.42 * len(names) + 1.3))
     left = [0.0] * len(names)
-    labels = [k.split(" ", 1)[-1] if " " in k else k for k in names]
+    labels = list(names)                     # with the method: GET and POST of a resource stay apart
     for key, lab, col in parts:
         vals = [split[k][key] for k in names]
         ax.barh(labels, vals, left=left, color=col, height=0.6, label=lab)
@@ -840,6 +841,10 @@ def build_html(ctx):
 <dl class="facts">{facts}</dl>"""]
     if ctx.get("callout"):
         parts.append(f"<div class=\"callout\">{ctx['callout']}</div>")
+    if ctx.get("run_notes"):
+        notes = "".join(f"<li>{e(n)}</li>" for n in ctx["run_notes"])
+        parts.append(f"<div class=\"callout\"><b>Notes from the run</b><ul class=\"obs\" style=\"margin:6px 0 0\">"
+                     f"{notes}</ul></div>")
     parts.append(f"<h2>Benchmarks</h2><p class=\"note\">{e(BENCH_NOTE)}</p>"
                  "<div class=\"scroll\"><table class=\"bench\"><thead><tr><th>Requirement</th><th>Benchmark</th>"
                  f"<th>This run</th><th>Result</th></tr></thead><tbody>{bench}</tbody></table></div>")
@@ -1043,6 +1048,7 @@ def main():
         "facts": facts, "notes": assess["findings"] + ([f"Performance started to degrade at about {bp['users']:,.0f} concurrent users."] if bp else []),
         "endpoints": endpoints, "failures": failures, "charts": charts, "error_types": error_types,
         "callout": callout, "callout_text": callout_text, "split": split,
+        "run_notes": [m for _, m in ((tl or {}).get("notices") or [])],
     }
     out_html = args.out or f"{args.prefix}_report.html"
     out_md = os.path.splitext(out_html)[0].removesuffix("_report") + "_summary.md"

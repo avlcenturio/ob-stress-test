@@ -181,12 +181,15 @@ def configure(environment):
             parts = [x.strip() for x in line.split(",")]
             if len(parts) >= 2 and parts[0] and parts[1]:
                 ptype = parts[2] if len(parts) > 2 and parts[2] in core.PAYMENT_TYPES else "domestic"
-                pis_entries.append({"consent_id": parts[0], "access_token": parts[1], "ptype": ptype})
+                role = "checks" if len(parts) > 3 and parts[3].lower().startswith("check") else "payment"
+                pis_entries.append({"consent_id": parts[0], "access_token": parts[1], "ptype": ptype, "role": role})
     for e in pis_entries:
         e.setdefault("ptype", "domestic")
+        e.setdefault("role", "payment")
     pis_keys = set(c.eps.get("PIS", []))
     c.pis_types = sorted({k.split(":")[0] for k in pis_keys})
-    c.pis = {"to_submit": collections.deque(e for e in pis_entries if f"{e['ptype']}:submit" in pis_keys),
+    c.pis = {"to_submit": collections.deque(e for e in pis_entries
+                                            if e["role"] == "payment" and f"{e['ptype']}:submit" in pis_keys),
              "authorised": [e for e in pis_entries if e["ptype"] in c.pis_types],
              "used": set(), "payments": [], "created": collections.deque(maxlen=500), "notices": set()}
     once = {e["key"] for e in core.ENDPOINTS["PIS"] if e.get("once")}
@@ -198,11 +201,6 @@ def configure(environment):
     run_s = getattr(environment.parsed_options, "run_time", None) if environment.parsed_options else None
     window = (run_s * 0.9) if run_s else 60.0       # spread over the run (or the first minute)
     c.pis["asap"] = (t.get("pis_submit_mode") or "At the start").startswith("At the start")
-    if c.pis["asap"] and c.pis["to_submit"] and any(k.endswith(":funds-check") for k in pis_keys):
-        c.pis["notices_due"] = c.pis.get("notices_due", []) + [
-            "PIS: funds checks only work before a consent's payment is submitted. With payment submissions at the start, "
-            "every consent is used straight away, so funds checks only run for consents that aren't submitted "
-            "(e.g. of a payment type whose submission isn't ticked). Choose 'Spread over the run time' to include them."]
     c.pis["interval"] = window / n if n else None
     for ptype in c.pis_types:      # reads of payments that this run never submits
         reads = [k for k in pis_keys if k.startswith(ptype + ":") and k.split(":")[1] in
@@ -475,9 +473,8 @@ class OpenBankingUser(HttpUser):
         if message in cfg.pis["notices"]:
             return
         cfg.pis["notices"].add(message)
-        self.environment.events.request.fire(request_type="CONFIG", name=message, response_time=0, response_length=0,
-                                             exception=Exception(message), context={})
-        log.warning(message)
+        timeline.setdefault("notices", []).append([int(time.time()), message])
+        log.warning(message)      # shown in Locust's Logs tab and in the report's notes
 
     def pis_tick(self):
         P = cfg.pis
@@ -509,6 +506,7 @@ class OpenBankingUser(HttpUser):
         return self.pis_do(key)
 
     def _pis_unused(self, ptype):
+        """Consents a funds check may use: those kept for checks, and payment consents not submitted yet."""
         return [e for e in cfg.pis["authorised"] if e["ptype"] == ptype and e["consent_id"] not in cfg.pis["used"]]
 
     def _pis_consents(self, ptype):
@@ -567,10 +565,14 @@ class OpenBankingUser(HttpUser):
             if item.get("expires_at", 1e18) - 10 < time.time():
                 refresh_entry(item, item["access_token"], "pis")
         renew = (lambda: refresh_entry(item, item["access_token"], "pis")) if cfg.flow["PIS"] else None
-        consent = self.cc_call("PIS", "GET", f"/{p['consent']}/{cid}", f"GET /{p['consent']}/[id]")
-        if not consent or "Initiation" not in consent.get("Data", {}):
-            return None
-        body = {"Data": {"ConsentId": cid, "Initiation": consent["Data"]["Initiation"]}, "Risk": consent.get("Risk", {})}
+        if item.get("initiation"):     # created by this tool: payment details were kept with the consent
+            initiation, risk = item["initiation"], item.get("risk", {})
+        else:                          # pasted consent: the details have to be read from the financial institution
+            consent = self.cc_call("PIS", "GET", f"/{p['consent']}/{cid}", f"GET /{p['consent']}/[id] (read before submitting)")
+            if not consent or "Initiation" not in consent.get("Data", {}):
+                return None
+            initiation, risk = consent["Data"]["Initiation"], consent.get("Risk", {})
+        body = {"Data": {"ConsentId": cid, "Initiation": initiation}, "Risk": risk}
         res = self.call("POST", f"{cfg.paths['PIS']}/{p['payment']}", item["access_token"], f"POST /{p['payment']}",
                         body, expect=(201,), sign=True, renew=renew)
         pid = (res or {}).get("Data", {}).get(p["id"])
@@ -738,7 +740,7 @@ def _write_timeline(prefix):
               for k, p in timeline["phases"].items()}
     with open(f"{prefix}_timeline.json", "w") as fh:
         json.dump({"version": 2, "secs": secs, "errors": timeline["errors"], "phases": phases,
-                   "rtt": timeline["rtt"]}, fh, separators=(",", ":"))
+                   "rtt": timeline["rtt"], "notices": timeline.get("notices", [])}, fh, separators=(",", ":"))
 
 
 def _is_worker(environment):
@@ -832,6 +834,7 @@ def start_run_record(environment, **_):
     run["dir"] = os.path.join(RESULTS, datetime.now().strftime("%Y-%m-%d_%H%M%S"))
     run["history"] = []
     timeline["secs"], timeline["errors"], timeline["phases"], timeline["rtt"] = {}, {}, {}, []
+    timeline["notices"] = []
     _conn_log.clear()
     if run.get("probe"):
         run["probe"].kill(block=False)
